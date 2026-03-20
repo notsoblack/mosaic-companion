@@ -49,7 +49,48 @@ export const DEFAULT_MODELS: Record<AIProvider, string[]> = {
     "o1-mini",
   ],
   gemini: ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-  ollama: ["llama3.2", "mistral", "codellama", "deepseek-coder"],
+  ollama: [
+    // Llama family
+    "llama3.3",
+    "llama3.2",
+    "llama3.1",
+    "llama3",
+    "llama2",
+    // Mistral family
+    "mistral",
+    "mistral-nemo",
+    "mistral-large",
+    "mixtral",
+    // Gemma family
+    "gemma2",
+    "gemma",
+    // Qwen family
+    "qwen2.5",
+    "qwen2",
+    "codeqwen",
+    // DeepSeek family
+    "deepseek-coder-v2",
+    "deepseek-coder",
+    "deepseek-v2",
+    // Phi family
+    "phi3.5",
+    "phi3",
+    // Command family
+    "command-r-plus",
+    "command-r",
+    // Cloud models (Ollama.com)
+    "minimax-m2.5:cloud",
+    "glm-5:cloud",
+    "kimi-k2.5:cloud",
+    "nemotron-3-super:cloud",
+    // Other popular
+    "codellama",
+    "starcoder2",
+    "dolphin-mixtral",
+    "dolphin-llama3",
+    "solar",
+    "yi",
+  ],
   custom: [],
 };
 

@@ -20,7 +20,11 @@ import {
   Server,
   Thermometer,
   Zap,
+  Wallet,
+  Brain,
 } from "lucide-react";
+import { WalletConnect } from "./WalletConnect";
+import { AgentSoulSettings } from "./AgentSoulSettings";
 import {
   AIAgentConfig,
   AIProvider,
@@ -911,6 +915,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                             {testResult.message}
                           </p>
                         )}
+
+                        {/* Agent Soul Settings */}
+                        <div className="mt-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+                          <AgentSoulSettings
+                            agentId={agent.id}
+                            agentName={agent.name}
+                          />
+                        </div>
+
                         <div className="w-full flex justify-end">
                           <button
                             onClick={() => saveAgent(agent)}
@@ -926,8 +939,22 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   </div>
                 );
               })}
+
             </div>
           )}
+        </section>
+
+        {/* Wallet Section */}
+        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
+          <h2 className="text-xl font-semibold text-indigo-400 flex items-center gap-2 mb-6">
+            <Wallet size={20} />
+            Wallet
+          </h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Connect your wallet to manage Hypercycle nodes and ANFEs on Ethereum and Base networks.
+            Link your on-chain nodes to AI agents for intelligent routing.
+          </p>
+          <WalletConnect agents={aiAgents} />
         </section>
 
         {/* Hypercycle Nodes Section */}

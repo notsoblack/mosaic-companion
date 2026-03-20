@@ -16,6 +16,8 @@ import {
   History,
   AlertCircle,
   Mail,
+  Users,
+  Play,
 } from "lucide-react";
 import {
   AIAgentConfig,
@@ -39,6 +41,16 @@ import {
 import ReactMarkdown from "react-markdown";
 import { INTERNAL_SETTINGS_URL } from "../types/types";
 import { ChatHistorySidebar } from "./ChatHistorySidebar";
+import { MultiAgentSelector } from "./MultiAgentSelector";
+import { MultiAgentPanel } from "./MultiAgentPanel";
+import {
+  OrchestrationMode,
+  AggregationStrategy,
+  AgentResponse,
+  OrchestrationResult,
+  OrchestrationCallbacks,
+} from "../types/agentOrchestration";
+import { AgentOrchestrationService } from "../services/AgentOrchestrationService";
 
 interface ChatViewProps {
   onNavigate?: (url: string) => void;
@@ -63,6 +75,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [gmailConnected, setGmailConnected] = useState(false);
   const [showHistorySidebar, setShowHistorySidebar] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
+  // Multi-agent state
+  const [isMultiAgentMode, setIsMultiAgentMode] = useState(false);
+  const [selectedMultiAgentIds, setSelectedMultiAgentIds] = useState<string[]>([]);
+  const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>("parallel");
+  const [aggregationStrategy, setAggregationStrategy] = useState<AggregationStrategy>("concatenate");
+  const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [multiAgentResponses, setMultiAgentResponses] = useState<AgentResponse[]>([]);
+  const [currentOrchestratingAgent, setCurrentOrchestratingAgent] = useState<string | null>(null);
+  const [showMultiAgentPanel, setShowMultiAgentPanel] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -696,7 +718,179 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      if (isMultiAgentMode) {
+        sendMultiAgentMessage();
+      } else {
+        sendMessage();
+      }
+    }
+  };
+
+  // Multi-agent orchestration send
+  const sendMultiAgentMessage = async () => {
+    if (!input.trim() || selectedMultiAgentIds.length === 0 || isOrchestrating) return;
+
+    const messageContent = input.trim();
+    setInput("");
+    setIsOrchestrating(true);
+    setMultiAgentResponses([]);
+    setStreamingContent("");
+
+    // Get selected agents
+    const selectedAgents = activeAgents.filter((a) =>
+      selectedMultiAgentIds.includes(a.id)
+    );
+
+    // Create user message
+    const userMessage: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      role: "user",
+      content: messageContent,
+      timestamp: Date.now(),
+      agentId: "multi",
+    };
+
+    // Create new session for multi-agent
+    const session: ChatSession = {
+      id: `session-${Date.now()}`,
+      agentId: "multi",
+      title: messageContent.slice(0, 40),
+      messages: [userMessage],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    setSessions((prev) => [session, ...prev]);
+    setActiveSessionId(session.id);
+
+    // Build callbacks for orchestration
+    const callbacks: OrchestrationCallbacks = {
+      onAgentStart: (agentId, agentName, order, total) => {
+        setCurrentOrchestratingAgent(agentName);
+        setStreamingContent(`[${order}/${total}] ${agentName} is thinking...`);
+      },
+      onAgentProgress: (agentId, token) => {
+        // Could stream tokens here but keep it simple for now
+      },
+      onAgentComplete: (agentId, response, duration) => {
+        setMultiAgentResponses((prev) => [
+          ...prev,
+          {
+            agentId,
+            agentName: activeAgents.find((a) => a.id === agentId)?.name || agentId,
+            response,
+            timestamp: Date.now(),
+            duration,
+          },
+        ]);
+      },
+      onAgentError: (agentId, error) => {
+        setMultiAgentResponses((prev) => [
+          ...prev,
+          {
+            agentId,
+            agentName: activeAgents.find((a) => a.id === agentId)?.name || agentId,
+            response: `⚠️ Error: ${error}`,
+            timestamp: Date.now(),
+            duration: 0,
+            error,
+          },
+        ]);
+      },
+      onAllComplete: async (result) => {
+        // Build combined response
+        let combinedContent = "";
+        if (result.responses.length > 1) {
+          combinedContent = result.responses
+            .map((r) => {
+              const agent = activeAgents.find((a) => a.id === r.agentId);
+              const color = agent ? PROVIDER_INFO[agent.provider]?.color : "#6B7280";
+              return `### ${r.agentName}\n\n${r.response}`;
+            })
+            .join("\n\n---\n\n");
+        } else {
+          combinedContent = result.responses[0]?.response || "";
+        }
+
+        const assistantMessage: ChatMessage = {
+          id: `msg-${Date.now()}-assistant`,
+          role: "assistant",
+          content: combinedContent,
+          timestamp: Date.now(),
+          agentId: "multi",
+        };
+
+        const finalSession: ChatSession = {
+          ...session,
+          messages: [...session.messages, assistantMessage],
+          updatedAt: Date.now(),
+        };
+
+        setSessions((prev) =>
+          prev.map((s) => (s.id === finalSession.id ? finalSession : s))
+        );
+        await saveSession(finalSession);
+
+        setStreamingContent("");
+        setIsOrchestrating(false);
+        setCurrentOrchestratingAgent(null);
+      },
+      onSynthesisStart: (agentId) => {
+        setStreamingContent(`Synthesizing results...`);
+      },
+    };
+
+    try {
+      if (orchestrationMode === "sequential") {
+        await AgentOrchestrationService.runSequential(
+          selectedAgents,
+          messageContent,
+          callbacks
+        );
+      } else if (orchestrationMode === "parallel") {
+        await AgentOrchestrationService.runParallel(
+          selectedAgents,
+          messageContent,
+          callbacks
+        );
+      } else if (orchestrationMode === "collaborative") {
+        await AgentOrchestrationService.runCollaborative(
+          selectedAgents,
+          messageContent,
+          3,
+          callbacks
+        );
+      } else if (orchestrationMode === "orchestrator") {
+        const [orchestrator, ...workers] = selectedAgents;
+        await AgentOrchestrationService.runOrchestrated(
+          orchestrator,
+          workers,
+          messageContent,
+          callbacks
+        );
+      }
+    } catch (error) {
+      console.error("Orchestration error:", error);
+      const errorMessage: ChatMessage = {
+        id: `msg-${Date.now()}-error`,
+        role: "assistant",
+        content: `⚠️ Orchestration error: ${(error as Error).message}`,
+        timestamp: Date.now(),
+        agentId: "multi",
+      };
+
+      const errorSession: ChatSession = {
+        ...session,
+        messages: [...session.messages, errorMessage],
+        updatedAt: Date.now(),
+      };
+
+      setSessions((prev) =>
+        prev.map((s) => (s.id === errorSession.id ? errorSession : s))
+      );
+      await saveSession(errorSession);
+      setIsOrchestrating(false);
+      setCurrentOrchestratingAgent(null);
     }
   };
 
@@ -751,52 +945,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   return (
     <div className="h-full flex bg-black">
-      {/* Main Chat Area */}
+      {/* Main Chat Area - Full height with proper flex layout */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <div className="shrink-0 border-b border-gray-800 bg-gray-950/80 backdrop-blur-md px-6 py-4">
-          <div className="max-w-4xl mx-auto flex items-center justify-between">
-            {/* Agent Selector */}
+        
+        {/* TOP BAR - Agent selector + Multi + Run buttons */}
+        <div className="shrink-0 border-b border-gray-800/50 bg-gray-950/90 backdrop-blur-md">
+          <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+            {/* Left: Agent Selector */}
             <div className="relative" ref={agentSelectorRef}>
               <button
                 onClick={() => setShowAgentSelector(!showAgentSelector)}
-                className="flex items-center gap-3 px-4 py-2 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl transition-colors"
+                className="flex items-center gap-2 px-3 py-2 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700/50 rounded-lg transition-colors"
               >
                 {selectedAgent && (
                   <>
                     <div
-                      className="w-2.5 h-2.5 rounded-full"
+                      className="w-2 h-2 rounded-full"
                       style={{
                         backgroundColor:
-                          PROVIDER_INFO[selectedAgent.provider]?.color ||
-                          "#6B7280",
-                        boxShadow: `0 0 8px ${
-                          PROVIDER_INFO[selectedAgent.provider]?.color ||
-                          "#6B7280"
-                        }`,
+                          PROVIDER_INFO[selectedAgent.provider]?.color || "#6B7280",
                       }}
                     />
-                    <div className="text-left">
-                      <p className="text-sm font-medium text-white">
-                        {selectedAgent.name}
-                      </p>
-                      <p className="text-xs text-gray-500 font-mono">
-                        {selectedAgent.model}
-                      </p>
-                    </div>
+                    <span className="text-sm text-gray-200 truncate max-w-[150px]">
+                      {selectedAgent.name}
+                    </span>
                   </>
                 )}
-                <ChevronDown
-                  size={16}
-                  className={`text-gray-400 transition-transform ${
-                    showAgentSelector ? "rotate-180" : ""
-                  }`}
-                />
+                <ChevronDown size={14} className="text-gray-400" />
               </button>
 
               {/* Agent Dropdown */}
               {showAgentSelector && (
-                <div className="absolute top-full left-0 mt-2 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl shadow-black/50 overflow-hidden z-50">
+                <div className="absolute top-full left-0 mt-2 w-64 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl shadow-black/50 overflow-hidden z-50">
                   <div className="p-2">
                     {activeAgents.map((agent) => (
                       <button
@@ -805,38 +985,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           setSelectedAgentId(agent.id);
                           setShowAgentSelector(false);
                         }}
-                        className={`
-                          w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors
-                          ${
-                            selectedAgentId === agent.id
-                              ? "bg-indigo-900/30 border border-indigo-500/30"
-                              : "hover:bg-gray-800"
-                          }
-                        `}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+                          selectedAgentId === agent.id
+                            ? "bg-indigo-600/20 border border-indigo-500/30"
+                            : "hover:bg-gray-800"
+                        }`}
                       >
                         <div
-                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          className="w-2 h-2 rounded-full shrink-0"
                           style={{
-                            backgroundColor:
-                              PROVIDER_INFO[agent.provider]?.color || "#6B7280",
-                            boxShadow: `0 0 8px ${
-                              PROVIDER_INFO[agent.provider]?.color || "#6B7280"
-                            }`,
+                            backgroundColor: PROVIDER_INFO[agent.provider]?.color || "#6B7280",
                           }}
                         />
                         <div className="text-left flex-1 min-w-0">
                           <p className="text-sm font-medium text-gray-200 truncate">
                             {agent.name}
                           </p>
-                          <p className="text-xs text-gray-500 font-mono truncate">
+                          <p className="text-xs text-gray-500 truncate">
                             {agent.model}
                           </p>
                         </div>
                         {selectedAgentId === agent.id && (
-                          <Check
-                            size={16}
-                            className="text-indigo-400 shrink-0"
-                          />
+                          <Check size={14} className="text-indigo-400 shrink-0" />
                         )}
                       </button>
                     ))}
@@ -845,193 +1015,314 @@ export const ChatView: React.FC<ChatViewProps> = ({
               )}
             </div>
 
-            {/* Actions */}
+            {/* Center: Multi + Run buttons */}
             <div className="flex items-center gap-2">
-              {activeSession && activeSession.messages.length >= 2 && (
-                <button
-                  onClick={regenerateLastResponse}
-                  disabled={isGenerating}
-                  className="p-2 text-gray-500 hover:text-gray-300 hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Regenerate last response"
-                >
-                  <RefreshCw size={18} />
-                </button>
-              )}
-              {onCreateNewChatTab ? (
-                <button
-                  onClick={onCreateNewChatTab}
-                  className="flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-                >
-                  <MessageSquare size={16} />
-                  <span className="text-sm">New Chat</span>
-                </button>
-              ) : (
-                <button
-                  onClick={createNewSession}
-                  className="flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-                >
-                  <MessageSquare size={16} />
-                  <span className="text-sm">New Chat</span>
-                </button>
-              )}
+              {/* Multi-Agent Toggle */}
               <button
-                onClick={() => setShowHistorySidebar(!showHistorySidebar)}
-                className={`p-2 rounded-lg transition-colors ${
-                  showHistorySidebar
-                    ? "bg-indigo-600 text-white"
-                    : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
-                }`}
-                title="Toggle history"
-              >
-                <History size={18} />
-              </button>
-              {activeSession && (
-                <button
-                  onClick={() =>
-                    handleDeleteSession(activeSession.agentId, activeSession.id)
+                onClick={() => {
+                  if (isMultiAgentMode) {
+                    setShowMultiAgentPanel(!showMultiAgentPanel);
+                  } else {
+                    setIsMultiAgentMode(true);
+                    setShowMultiAgentPanel(true);
                   }
-                  className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                  title="Delete chat"
-                >
-                  <Trash2 size={18} />
-                </button>
+                }}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                  isMultiAgentMode
+                    ? "bg-purple-600 text-white shadow-lg"
+                    : "bg-gray-800/50 text-gray-300 hover:bg-gray-700/50 border border-gray-700/50"
+                }`}
+              >
+                <Users size={16} />
+                <span>Multi</span>
+              </button>
+
+              {/* Run Button */}
+              <button
+                onClick={() => {
+                  if (isMultiAgentMode && selectedMultiAgentIds.length > 0) {
+                    setShowMultiAgentPanel(false);
+                    setTimeout(() => textareaRef.current?.focus(), 100);
+                  } else if (isMultiAgentMode) {
+                    setShowMultiAgentPanel(true);
+                  }
+                }}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                  !isMultiAgentMode
+                    ? "bg-gray-800/30 text-gray-500 cursor-not-allowed"
+                    : selectedMultiAgentIds.length > 0
+                      ? "bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg"
+                      : "bg-gray-700/50 text-gray-400 border border-gray-600/50"
+                }`}
+              >
+                <Play size={16} />
+                <span>{isMultiAgentMode && selectedMultiAgentIds.length > 0 ? `Run (${selectedMultiAgentIds.length})` : "Run"}</span>
+              </button>
+
+              {/* Mode indicator */}
+              {isMultiAgentMode && selectedMultiAgentIds.length > 1 && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-600/20 border border-purple-500/30">
+                  <Zap size={12} className="text-purple-400" />
+                  <span className="text-xs text-purple-300 font-medium">
+                    {orchestrationMode}
+                  </span>
+                </div>
               )}
             </div>
+
+            {/* Right: History button */}
+            <button
+              onClick={() => setShowHistorySidebar(!showHistorySidebar)}
+              className={`p-2 rounded-lg transition-colors ${
+                showHistorySidebar
+                  ? "bg-indigo-600 text-white"
+                  : "text-gray-400 hover:text-white hover:bg-gray-800"
+              }`}
+            >
+              <History size={18} />
+            </button>
           </div>
         </div>
 
-        {/* Messages Area */}
+        {/* MULTI-AGENT SELECTOR BAR - Horizontal panel below top bar */}
+        {isMultiAgentMode && (
+          <div className="shrink-0 border-b border-gray-800/50 bg-gray-900/95 backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="max-w-4xl mx-auto px-4 py-3">
+              {/* Agent selection row */}
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">Agents</span>
+                <div className="flex-1 flex items-center gap-2 flex-wrap">
+                  {activeAgents.map((agent) => (
+                    <button
+                      key={agent.id}
+                      onClick={() => {
+                        if (selectedMultiAgentIds.includes(agent.id)) {
+                          setSelectedMultiAgentIds(selectedMultiAgentIds.filter(id => id !== agent.id));
+                        } else {
+                          setSelectedMultiAgentIds([...selectedMultiAgentIds, agent.id]);
+                        }
+                      }}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                        selectedMultiAgentIds.includes(agent.id)
+                          ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/25'
+                          : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 border border-gray-700/50'
+                      }`}
+                    >
+                      <div
+                        className="w-2 h-2 rounded-full"
+                        style={{
+                          backgroundColor: PROVIDER_INFO[agent.provider]?.color || '#6B7280',
+                        }}
+                      />
+                      <span>{agent.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mode and Aggregation row */}
+              {selectedMultiAgentIds.length > 1 && (
+                <div className="flex items-center gap-4">
+                  {/* Mode buttons */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">Mode</span>
+                    <div className="flex gap-1">
+                      {(['parallel', 'sequential', 'collaborative', 'orchestrator'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          onClick={() => setOrchestrationMode(mode)}
+                          className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                            orchestrationMode === mode
+                              ? 'bg-purple-600/30 text-purple-300 border border-purple-500/50'
+                              : 'bg-gray-800/50 text-gray-400 hover:text-gray-300 border border-gray-700/50'
+                          }`}
+                        >
+                          {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Aggregation buttons */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">Output</span>
+                    <div className="flex gap-1">
+                      {([
+                        { value: 'concatenate', label: 'Combine' },
+                        { value: 'lastWins', label: 'Last' },
+                      ] as const).map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => setAggregationStrategy(opt.value)}
+                          className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                            aggregationStrategy === opt.value
+                              ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/50'
+                              : 'bg-gray-800/50 text-gray-400 hover:text-gray-300 border border-gray-700/50'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Status row */}
+              {selectedMultiAgentIds.length > 0 && (
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-800/50">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 rounded-full bg-purple-500" />
+                    <span className="text-sm text-purple-300 font-medium">
+                      {selectedMultiAgentIds.length} agent{selectedMultiAgentIds.length > 1 ? 's' : ''} selected
+                    </span>
+                  </div>
+                  {selectedMultiAgentIds.length > 1 && (
+                    <span className="text-xs text-gray-500">
+                      • {orchestrationMode} mode
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* MAIN CHAT AREA - Centered messages */}
         <div className="flex-1 overflow-y-auto">
-          <div className="max-w-4xl mx-auto py-8 px-6">
-            {(!activeSession || activeSession.messages.length === 0) &&
-            !streamingContent ? (
+          <div className="max-w-3xl mx-auto py-8 px-6">
+            {/* Empty state */}
+            {(!activeSession || activeSession.messages.length === 0) && !streamingContent ? (
               <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/30 flex items-center justify-center mb-6">
-                  <Sparkles className="size-8 text-indigo-400" />
+                  {isMultiAgentMode ? (
+                    <Users className="size-8 text-purple-400" />
+                  ) : (
+                    <Bot className="size-8 text-indigo-400" />
+                  )}
                 </div>
-                <h2 className="text-xl font-semibold text-white mb-2">
-                  Chat with {selectedAgent?.name || "AI"}
-                </h2>
-                <p className="text-gray-500 max-w-md">
-                  Start a conversation by typing a message below. Your chat will
-                  be powered by{" "}
-                  <span className="text-indigo-400 font-mono">
-                    {selectedAgent?.model}
-                  </span>
-                </p>
+                
+                {isMultiAgentMode ? (
+                  <>
+                    <h2 className="text-xl font-semibold text-white mb-2">
+                      Multi-Agent Mode
+                    </h2>
+                    <p className="text-gray-400 mb-4">
+                      {selectedMultiAgentIds.length > 0
+                        ? `${selectedMultiAgentIds.length} agents ready in ${orchestrationMode} mode`
+                        : "Select agents to begin"}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-xl font-semibold text-white mb-2">
+                      {selectedAgent?.name || "AI Assistant"}
+                    </h2>
+                    <p className="text-gray-400 mb-4">
+                      {selectedAgent?.model || "Ready to help"}
+                    </p>
+                  </>
+                )}
+
+                <div className="flex flex-wrap justify-center gap-2">
+                  {["Ask a question", "Write code", "Analyze data", "Create content"].map(
+                    (suggestion) => (
+                      <button
+                        key={suggestion}
+                        onClick={() => setInput(suggestion + "... ")}
+                        className="px-4 py-2 bg-gray-800/50 hover:bg-gray-700/50 text-gray-300 rounded-lg text-sm transition-colors border border-gray-700/50"
+                      >
+                        {suggestion}
+                      </button>
+                    )
+                  )}
+                </div>
               </div>
             ) : (
+              /* Messages */
               <div className="space-y-6">
-                {activeSession?.messages.map((message) => (
+                {activeSession?.messages.map((message, index) => (
                   <div
                     key={message.id}
                     className={`flex gap-4 ${
-                      message.role === "user" ? "flex-row-reverse" : ""
+                      message.role === "user" ? "justify-end" : "justify-start"
                     }`}
                   >
-                    {/* Avatar */}
-                    <div
-                      className={`
-                        shrink-0 w-10 h-10 rounded-xl flex items-center justify-center
-                        ${
-                          message.role === "user"
-                            ? "bg-indigo-600"
-                            : "bg-gray-800 border border-gray-700"
-                        }
-                      `}
-                    >
-                      {message.role === "user" ? (
-                        <User size={18} className="text-white" />
-                      ) : (
-                        <Bot size={18} className="text-gray-400" />
-                      )}
-                    </div>
-
-                    {/* Message Content */}
-                    <div
-                      className={`
-                      flex-1 max-w-[80%] group
-                      ${message.role === "user" ? "text-right" : ""}
-                    `}
-                    >
-                      <div
-                        className={`
-                        inline-block px-4 py-3 rounded-2xl text-left
-                        ${
-                          message.role === "user"
-                            ? "bg-indigo-600 text-white rounded-br-md"
-                            : "bg-gray-900 text-gray-200 border border-gray-800 rounded-bl-md"
-                        }
-                      `}
-                      >
-                        <div className="break-words text-[15px] leading-loose prose prose-invert prose-sm max-w-none prose-p:my-3 prose-headings:my-4 prose-ul:my-3 prose-li:my-2 prose-hr:my-4">
-                          {message.role === "assistant" ? (
-                            <ReactMarkdown>{message.content}</ReactMarkdown>
-                          ) : (
-                            <span className="whitespace-pre-wrap">
-                              {message.content}
-                            </span>
-                          )}
-                        </div>
+                    {message.role !== "user" && (
+                      <div className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+                        <Bot size={16} className="text-white" />
                       </div>
-
-                      {/* Message Actions */}
-                      <div
-                        className={`
-                        flex items-center gap-2 mt-1 opacity-0 group-hover:opacity-100 transition-opacity
-                        ${message.role === "user" ? "justify-end" : ""}
-                      `}
-                      >
-                        <button
-                          onClick={() =>
-                            copyMessage(message.id, message.content)
-                          }
-                          className="p-1 text-gray-600 hover:text-gray-400 transition-colors"
-                        >
-                          {copiedId === message.id ? (
-                            <Check size={14} className="text-emerald-500" />
-                          ) : (
-                            <Copy size={14} />
-                          )}
-                        </button>
-                        <span className="text-xs text-gray-600 font-mono">
-                          {new Date(message.timestamp).toLocaleTimeString()}
-                        </span>
+                    )}
+                    <div
+                      className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                        message.role === "user"
+                          ? "bg-indigo-600 text-white"
+                          : "bg-gray-800 text-gray-100"
+                      }`}
+                    >
+                      <div className="prose prose-sm prose-invert max-w-none">
+                        {message.content}
                       </div>
                     </div>
+                    {message.role === "user" && (
+                      <div className="shrink-0 w-8 h-8 rounded-lg bg-gray-700 flex items-center justify-center">
+                        <User size={16} className="text-gray-300" />
+                      </div>
+                    )}
                   </div>
                 ))}
 
-                {/* Streaming Response */}
+                {/* Streaming content */}
                 {streamingContent && (
-                  <div className="flex gap-4">
-                    <div className="shrink-0 w-10 h-10 rounded-xl bg-gray-800 border border-gray-700 flex items-center justify-center">
-                      <Bot size={18} className="text-gray-400" />
+                  <div className="flex gap-4 justify-start">
+                    <div className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+                      <Bot size={16} className="text-white" />
                     </div>
-
-                    <div className="flex-1 max-w-[80%]">
-                      <div className="inline-block px-4 py-3 rounded-2xl rounded-bl-md bg-gray-900 text-gray-200 border border-gray-800">
-                        <div className="break-words text-[15px] leading-loose prose prose-invert prose-sm max-w-none prose-p:my-3 prose-headings:my-4 prose-ul:my-3 prose-li:my-2 prose-hr:my-4">
-                          <ReactMarkdown>{streamingContent}</ReactMarkdown>
-                          <span className="inline-block w-2 h-4 bg-indigo-500 ml-0.5 animate-pulse" />
-                        </div>
+                    <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-gray-800 text-gray-100">
+                      <div className="prose prose-sm prose-invert max-w-none">
+                        {streamingContent}
                       </div>
                     </div>
                   </div>
                 )}
 
+                {/* Multi-agent responses */}
+                {multiAgentResponses.length > 0 && (
+                  <div className="space-y-4">
+                    {multiAgentResponses.map((response, index) => (
+                      <div key={index} className="flex gap-4 justify-start">
+                        <div className="shrink-0 w-8 h-8 rounded-lg bg-purple-600 flex items-center justify-center">
+                          <Users size={16} className="text-white" />
+                        </div>
+                        <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-gray-800 text-gray-100">
+                          <div className="text-xs text-purple-400 mb-1 font-medium">
+                            {response.agentName}
+                          </div>
+                          <div className="prose prose-sm prose-invert max-w-none">
+                            {response.response}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Loading indicator */}
-                {isGenerating && !streamingContent && (
-                  <div className="flex gap-4">
-                    <div className="shrink-0 w-10 h-10 rounded-xl bg-gray-800 border border-gray-700 flex items-center justify-center">
-                      <Bot size={18} className="text-gray-400" />
+                {(isGenerating || isOrchestrating) && !streamingContent && multiAgentResponses.length === 0 && (
+                  <div className="flex gap-4 justify-start">
+                    <div className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+                      <Loader2 size={16} className="text-white animate-spin" />
                     </div>
-                    <div className="flex items-center gap-2 px-4 py-3 bg-gray-900 border border-gray-800 rounded-2xl rounded-bl-md">
-                      <Loader2
-                        size={16}
-                        className="animate-spin text-indigo-400"
-                      />
-                      <span className="text-sm text-gray-400">Thinking...</span>
+                    <div className="rounded-2xl px-4 py-3 bg-gray-800">
+                      <div className="flex items-center gap-2">
+                        {isOrchestrating && currentOrchestratingAgent ? (
+                          <span className="text-gray-400 text-sm">
+                            {currentOrchestratingAgent} is thinking...
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 text-sm">Thinking...</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1042,64 +1333,64 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         </div>
 
-        {/* Input Area */}
-        <div className="shrink-0 border-t border-gray-800 bg-gray-950/80 backdrop-blur-md p-4">
-          <div className="max-w-4xl mx-auto">
+        {/* BOTTOM SECTION - Input + Agent Status */}
+        <div className="shrink-0 border-t border-gray-800/50 bg-gray-950/90 backdrop-blur-md">
+          {/* Message Input */}
+          <div className="max-w-3xl mx-auto p-4">
             <div className="flex items-end gap-3">
-              <div className="flex-1 bg-gray-900 border border-gray-800 rounded-2xl p-2 focus-within:ring-2 focus-within:ring-indigo-500/50 focus-within:border-indigo-500/50 transition-all">
+              <div className="flex-1 bg-gray-800/50 border border-gray-700/50 rounded-2xl p-2 focus-within:ring-2 focus-within:ring-indigo-500/50 focus-within:border-indigo-500/50 transition-all">
                 <textarea
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={`Message ${selectedAgent?.name || "AI"}...`}
+                  placeholder={
+                    isMultiAgentMode
+                      ? `Message ${selectedMultiAgentIds.length} agents...`
+                      : `Message ${selectedAgent?.name || "AI"}...`
+                  }
                   className="w-full bg-transparent text-gray-100 placeholder-gray-500 resize-none min-h-[24px] max-h-[150px] px-3 py-2 focus:outline-none"
                   rows={1}
-                  disabled={isGenerating}
+                  disabled={isGenerating || isOrchestrating}
                 />
               </div>
               <button
-                onClick={sendMessage}
-                data-auto-send
-                disabled={!input.trim() || isGenerating}
-                className={`
-                  p-4 rounded-xl transition-all flex items-center justify-center
-                  ${
-                    input.trim() && !isGenerating
-                      ? "bg-indigo-600 hover:bg-indigo-500 text-white hover:scale-105 shadow-lg shadow-indigo-500/25"
+                onClick={isMultiAgentMode ? sendMultiAgentMessage : sendMessage}
+                disabled={
+                  isMultiAgentMode
+                    ? !input.trim() || isOrchestrating || selectedMultiAgentIds.length === 0
+                    : !input.trim() || isGenerating
+                }
+                className={`p-3 rounded-xl transition-all ${
+                  isMultiAgentMode
+                    ? input.trim() && !isOrchestrating && selectedMultiAgentIds.length > 0
+                      ? "bg-purple-600 hover:bg-purple-500 text-white shadow-lg"
                       : "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  }
-                `}
+                    : input.trim() && !isGenerating
+                      ? "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg"
+                      : "bg-gray-800 text-gray-500 cursor-not-allowed"
+                }`}
               >
-                {isGenerating ? (
+                {isGenerating || isOrchestrating ? (
                   <Loader2 size={20} className="animate-spin" />
+                ) : isMultiAgentMode ? (
+                  <Users size={20} />
                 ) : (
                   <Send size={20} />
                 )}
               </button>
             </div>
-
-            {/* Status Bar */}
-            <div className="flex items-center justify-center gap-2 mt-3 opacity-50">
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{
-                  backgroundColor: selectedAgent
-                    ? PROVIDER_INFO[selectedAgent.provider]?.color || "#6B7280"
-                    : "#6B7280",
-                  boxShadow: selectedAgent
-                    ? `0 0 6px ${
-                        PROVIDER_INFO[selectedAgent.provider]?.color ||
-                        "#6B7280"
-                      }`
-                    : "none",
-                }}
-              />
-              <span className="text-[10px] text-gray-500 font-mono tracking-widest uppercase">
-                {selectedAgent?.model || "No model selected"}
-              </span>
-            </div>
           </div>
+
+          {/* Agent Status Bar - Below input */}
+          <MultiAgentPanel
+            agents={activeAgents}
+            selectedAgentIds={selectedMultiAgentIds}
+            orchestrationMode={orchestrationMode}
+            isActive={isMultiAgentMode}
+            isRunning={isOrchestrating}
+            currentAgentName={currentOrchestratingAgent}
+          />
         </div>
       </div>
 

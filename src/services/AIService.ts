@@ -1,6 +1,7 @@
 // AI Service - Handles API calls to different AI providers
 
 import { AIAgentConfig, ChatMessage, AIProvider } from "../types/ai";
+import { AgentSoulService } from "./AgentSoulService";
 
 interface StreamCallbacks {
   onToken: (token: string) => void;
@@ -9,6 +10,52 @@ interface StreamCallbacks {
 }
 
 export class AIService {
+  // Get system prompt from agent soul
+  private static async getSystemPrompt(config: AIAgentConfig): Promise<string | null> {
+    try {
+      const soul = await AgentSoulService.getSoul(config.id);
+      if (soul) {
+        return AgentSoulService.generateSystemPrompt(soul);
+      }
+    } catch (e) {
+      console.error('[AIService] Error getting soul:', e);
+    }
+    return null;
+  }
+
+  // Inject system prompt into messages
+  private static async injectSystemPrompt(
+    config: AIAgentConfig, 
+    messages: ChatMessage[]
+  ): Promise<ChatMessage[]> {
+    const systemPrompt = await this.getSystemPrompt(config);
+    
+    if (systemPrompt) {
+      // Check if there's already a system message
+      const hasSystemMessage = messages.some(m => m.role === 'system');
+      
+      if (hasSystemMessage) {
+        // Replace existing system message
+        return messages.map(m => 
+          m.role === 'system' ? { ...m, content: systemPrompt } : m
+        );
+      } else {
+        // Add system message at the beginning
+        return [
+          {
+            id: 'system-' + Date.now(),
+            role: 'system',
+            content: systemPrompt,
+            timestamp: Date.now(),
+            agentId: config.id
+          },
+          ...messages
+        ];
+      }
+    }
+    
+    return messages;
+  }
   // Send message to Claude API
   static async sendToClaude(
     config: AIAgentConfig,
@@ -274,18 +321,26 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
+    // Inject soul system prompt if available
+    const messagesWithSoul = await this.injectSystemPrompt(config, messages);
+    
+    // Extract memories from conversation (async, non-blocking)
+    this.extractMemoriesAsync(config.id, messages).catch(e => 
+      console.error('[AIService] Error extracting memories:', e)
+    );
+    
     switch (config.provider) {
       case "claude":
-        return this.sendToClaude(config, messages, callbacks);
+        return this.sendToClaude(config, messagesWithSoul, callbacks);
       case "openai":
-        return this.sendToOpenAI(config, messages, callbacks);
+        return this.sendToOpenAI(config, messagesWithSoul, callbacks);
       case "gemini":
-        return this.sendToGemini(config, messages, callbacks);
+        return this.sendToGemini(config, messagesWithSoul, callbacks);
       case "ollama":
-        return this.sendToOllama(config, messages, callbacks);
+        return this.sendToOllama(config, messagesWithSoul, callbacks);
       case "custom":
         // Custom endpoints assume OpenAI-compatible API
-        return this.sendToOpenAI(config, messages, callbacks);
+        return this.sendToOpenAI(config, messagesWithSoul, callbacks);
       default:
         throw new Error(`Unknown provider: ${config.provider}`);
     }
@@ -310,6 +365,47 @@ export class AIService {
       return { success: true, message: "Connection established successfully!" };
     } catch (error) {
       return { success: false, message: (error as Error).message };
+    }
+  }
+
+  // Extract and store memories from conversation (non-blocking)
+  private static async extractMemoriesAsync(
+    agentId: string,
+    messages: ChatMessage[]
+  ): Promise<void> {
+    try {
+      // Get last user-assistant exchange
+      const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
+      const lastAssistantMessage = [...messages].reverse().find(m => m.role === 'assistant');
+      
+      if (!lastUserMessage || !lastAssistantMessage) return;
+      
+      // Extract memories
+      const extracted = AgentSoulService.extractMemories(
+        lastUserMessage.content,
+        lastAssistantMessage.content
+      );
+      
+      if (extracted.facts.length > 0 || extracted.preferences.length > 0) {
+        const soul = await AgentSoulService.getSoul(agentId);
+        if (soul) {
+          // Add new facts
+          for (const fact of extracted.facts.slice(0, 3)) {
+            await AgentSoulService.addMemory(agentId, 'keyFacts', fact);
+          }
+          // Add new preferences
+          for (const pref of extracted.preferences.slice(0, 3)) {
+            await AgentSoulService.addMemory(agentId, 'preferences', pref);
+          }
+          // Update recent topics
+          await AgentSoulService.updateRecentContext(agentId, {
+            lastTopics: extracted.topics.slice(0, 5)
+          });
+        }
+      }
+    } catch (e) {
+      // Non-blocking, just log
+      console.error('[AIService] Memory extraction failed:', e);
     }
   }
 }
