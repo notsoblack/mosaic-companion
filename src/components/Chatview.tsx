@@ -36,12 +36,10 @@ import {
   buildEmailAnalysisPrompt,
   buildSingleEmailAnalysisPrompt,
   isGmailAuthenticated,
-} from "../services/ActionParser";
-import {
   getGmailSystemPrompt,
   mightBeEmailRelated,
   detectEmailReadRequest,
-} from "../prompts/gmail-tools";
+} from "../services/ActionParser";
 import ReactMarkdown from "react-markdown";
 import { INTERNAL_SETTINGS_URL } from "../types/types";
 import { ChatHistorySidebar } from "./ChatHistorySidebar";
@@ -422,7 +420,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         const systemMessage: ChatMessage = {
           id: "gmail-system",
           role: "user" as const, // Inject as user message for better compatibility
-          content: `[System Context] ${getGmailSystemPrompt(true)}`,
+          content: `[System Context] ${getGmailSystemPrompt()}`,
           timestamp: Date.now(),
           agentId: selectedAgent.id,
         };

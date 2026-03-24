@@ -87,3 +87,13 @@ export interface ShellExecuteResponse {
     stderr?: string;
     error?: string;
 }
+
+// Internal URLs for new features (from main's architecture)
+export const INTERNAL_MCP_URL = 'browser://mcp';
+export const INTERNAL_MOSAICBOT_URL = 'browser://mosaicbot';
+export const INTERNAL_MULTI_CHAT_URL = 'browser://multi_chat';
+export const INTERNAL_WEB3_URL = 'browser://web3';
+export const INTERNAL_VAULT_URL = 'browser://vault';
+export const INTERNAL_SANDBOX_URL = 'browser://sandbox';
+export const INTERNAL_ONBOARDING_URL = 'browser://onboarding';
+export const INTERNAL_TOOL_PANEL_PREFIX = 'browser://tool-panel/';

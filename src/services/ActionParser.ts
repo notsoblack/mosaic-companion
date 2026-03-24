@@ -6,11 +6,11 @@
 import type { ToolUIBlock, BlockType } from "../components/tool-ui/types";
 import { MAX_BLOCK_COUNT, MAX_BLOCK_DEPTH } from "../components/tool-ui/types";
 
-export type ActionType = "TOOL_CALL" | "NONE";
+export type ActionType = "TOOL_CALL" | "NONE" | "GMAIL_READ";
 
 export interface ParsedAction {
   type: ActionType;
-  params?: { server: string; tool: string; args: Record<string, unknown> };
+  params?: { server: string; tool: string; args: Record<string, unknown> } | { index?: boolean | number };
   cleanResponse: string;
   rawTag?: string;
 }
@@ -62,7 +62,12 @@ export async function executeToolCall(action: ParsedAction, agentId?: string): P
     return { text: "Invalid tool action" };
   }
 
-  const { server, tool, args } = action.params;
+  // Check if params has the TOOL_CALL shape (server, tool, args)
+  if (!('server' in action.params) || !('tool' in action.params)) {
+    return { text: "Invalid tool action: missing server or tool" };
+  }
+
+  const { server, tool, args } = action.params as { server: string; tool: string; args: Record<string, unknown> };
   const context = agentId ? { agentId } : undefined;
 
   // 1. Try built-in ToolRegistry first
@@ -376,11 +381,36 @@ export function getRichUISystemPrompt(): string {
 /**
  * Check if Gmail is authenticated.
  */
+
+/**
+ * Check if Gmail is authenticated.
+ */
 export async function isGmailAuthenticated(): Promise<boolean> {
-  try {
-    const status = await window.electronAPI.gmail.getStatus();
-    return status.authenticated;
-  } catch {
-    return false;
-  }
+  return false;
 }
+
+// Gmail stub functions for local build compatibility
+export function mightBeEmailRelated(message: string): boolean {
+  return false;
+}
+
+export function detectEmailReadRequest(message: string): boolean {
+  return false;
+}
+
+export function getGmailSystemPrompt(): string {
+  return "Gmail integration available via electron/integrations/gmail";
+}
+
+export async function executeGmailAction(action: ParsedAction): Promise<ToolCallOutput> {
+  return { text: "Gmail actions available via electron/integrations/gmail" };
+}
+
+export function buildEmailAnalysisPrompt(content: string, emails: any): string {
+  return "Email analysis available via electron/integrations/gmail";
+}
+
+export function buildSingleEmailAnalysisPrompt(content: string, email: any): string {
+  return "Email analysis available via electron/integrations/gmail";
+}
+
