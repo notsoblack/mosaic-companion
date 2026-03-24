@@ -56,6 +56,7 @@ export default {
             /^\/scripts$/,
             /^\/release$/,
             /^\/out$/,
+            /^\/tests$/,              // Test files and test tools
             // Config and dev files
             /\.md$/,
             /\.sh$/,
@@ -68,7 +69,9 @@ export default {
             /\.env$/,
             /\.env\.local$/,
         ],
-        extraResource: [],
+        extraResource: [
+            'config/gmail-credentials.json'
+        ],
         protocols: [
             {
                 name: 'Mosaic Companion',
@@ -94,10 +97,6 @@ export default {
                 loadingGif: 'assets/loading.gif',
                 setupIcon: 'assets/icon.ico'
             }
-        },
-        {
-            name: '@electron-forge/maker-zip',
-            platforms: ['darwin']
         },
         {
             name: '@electron-forge/maker-dmg',
@@ -139,10 +138,6 @@ export default {
                     categories: ['Utility']
                 }
             }
-        },
-        {
-            name: '@electron-forge/maker-zip',
-            platforms: ['linux', 'darwin', 'win32']
         }
     ],
 

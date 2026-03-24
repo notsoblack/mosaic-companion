@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, powerMonitor } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -30,10 +30,42 @@ import {
   deleteAllAgentHistories,
   getErrorMessage,
 } from "./utils/index";
-import { mcpClient } from "./integrations/mcp/index";
+import { mcpClient, setMainWindow as mcpSetMainWindow, initPlugins } from "./integrations/mcp/index";
+import { initializeTools, cleanupTools } from "./integrations/tools";
+import { initMosaicBot } from "./integrations/mosaicbot/src/main/index";
+import { initChat, setMainWindow as setChatMainWindow, stopChat } from "./integrations/chat/index";
 import { createRequire } from 'module';
 import { authenticate, isAuthenticated, signOut } from "./integrations/gmail";
 import { getUserProfile, getRecentEmails, getEmailDetails, searchEmails, markAsRead, markAsUnread } from "./integrations/gmail/gmailClient";
+import {
+  loadConfig,
+  saveConfig,
+  setActiveNetwork,
+  setCustomRpc,
+  addToken,
+  updateToken,
+  deleteToken,
+  setTransferLimit,
+  removeTransferLimit,
+  addBannedAddress,
+  removeBannedAddress,
+  updateSafetySettings,
+  type Web3Config,
+  type NetworkId,
+} from "./integrations/web3/config";
+import {
+  getBoxes,
+  getBox,
+  addBox,
+  updateBox,
+  deleteBox,
+  getAgentBoxes,
+  getBoxContent,
+  addEntry,
+  updateEntry,
+  deleteEntry,
+} from "./integrations/vault";
+import type { VaultBox } from "./integrations/vault/types";
 
 // =============================================================================
 // ESM Path Setup
@@ -124,6 +156,7 @@ const agentsHistoryPath = path.join(app.getPath("userData"), "agents_history");
 // Window Management
 // =============================================================================
 let mainWindow: BrowserWindow | null = null;
+let mosaicBotStop: (() => Promise<void>) | null = null;
 
 function getIconPath(): string {
   // In packaged app, assets are at PROJECT_ROOT/assets
@@ -189,6 +222,14 @@ function createWindow(urlToLoad: string | null = null): BrowserWindow {
     console.error(`Failed to load ${validatedURL}: ${errorCode} (${errorDescription})`);
   });
 
+  // Handle loss of CSS syles after hibernation (Mac)
+  powerMonitor.on('resume', () => {
+    if (win) {
+      // Force reload to re-apply CSS
+      win.reload()
+    }
+  })
+
   mainWindow = win;
   return win;
 }
@@ -220,6 +261,9 @@ function recreateWindow(): void {
 // =============================================================================
 app.on("before-quit", () => {
   mcpClient.disconnectAll();
+  cleanupTools().catch(console.error);
+  if (mosaicBotStop) mosaicBotStop().catch(console.error);
+  stopChat();
 });
 
 // Suppress ERR_ABORTED errors from webviews
@@ -247,7 +291,21 @@ app.whenReady().then(() => {
     }
   }
 
-  createWindow();
+  const win = createWindow();
+  mcpSetMainWindow(win);
+  setChatMainWindow(win);
+  initPlugins().catch((e) => console.error("[MCP] Plugin init failed:", e));
+  initChat();
+
+  // Initialize tool registry
+  initializeTools().catch((e) => console.error("[Tools] Init failed:", e));
+
+  // Initialize MosaicBot agent subsystem
+  initMosaicBot().then((bot) => {
+    mosaicBotStop = bot.stop.bind(bot);
+  }).catch((e) => {
+    console.error("[MosaicBot] Init failed:", e);
+  });
 
   // Initialize updater (production only)
   if (app.isPackaged) {
@@ -266,6 +324,7 @@ app.whenReady().then(() => {
   } catch (e) {
     // Ignore
   }
+
 });
 
 app.on("window-all-closed", () => {
@@ -324,6 +383,17 @@ ipcMain.handle("window:close", () => {
 
 ipcMain.handle("window:is-maximized", () => {
   return mainWindow ? mainWindow.isMaximized() : false;
+});
+
+// File dialog for sandbox tool installation
+ipcMain.handle("dialog:open-file", async (_event, options?: { filters?: Array<{ name: string; extensions: string[] }> }) => {
+  const { dialog } = await import("electron");
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ["openFile"],
+    filters: options?.filters ?? [{ name: "WebAssembly", extensions: ["wasm"] }],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
 });
 
 // CSV Logging
@@ -626,6 +696,26 @@ ipcMain.handle("gmail:set-auto-mark-read", (_event, enabled) => {
   return { ...result, enabled: getGmailAutoMarkRead() };
 });
 
+// Web3 Config Handlers (direct access for UI)
+ipcMain.handle("web3:get-config", async () => {
+  return loadConfig();
+});
+
+ipcMain.handle("web3:update-config", async (_event, updates: Partial<Web3Config>) => {
+  try {
+    const config = loadConfig();
+    // Apply granular updates
+    if (updates.activeNetwork) setActiveNetwork(updates.activeNetwork);
+    if (updates.safety) updateSafetySettings(updates.safety);
+    // For full config replacement (tokens, limits, bans updated via their own tools/IPC)
+    const merged = { ...config, ...updates, safety: { ...config.safety, ...(updates.safety || {}) } };
+    saveConfig(merged);
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Theme Handlers
 ipcMain.handle("themes:get", async () => {
   return readThemeSettings();
@@ -672,3 +762,62 @@ ipcMain.handle("ai-agents-history:delete-all", async (_event: IpcMainInvokeEvent
     return { success: false, error: getErrorMessage(error) };
   }
 });
+
+// =============================================================================
+// Vault Handlers
+// =============================================================================
+
+ipcMain.handle("vault:get-boxes", async () => {
+  return getBoxes();
+});
+
+ipcMain.handle("vault:get-box", async (_event: IpcMainInvokeEvent, id: string) => {
+  return getBox(id);
+});
+
+ipcMain.handle(
+  "vault:add-box",
+  async (_event: IpcMainInvokeEvent, input: Partial<Omit<VaultBox, "id" | "createdAt" | "updatedAt">>) => {
+    return addBox(input);
+  },
+);
+
+ipcMain.handle(
+  "vault:update-box",
+  async (_event: IpcMainInvokeEvent, id: string, updates: Partial<Omit<VaultBox, "id" | "createdAt">>) => {
+    return updateBox(id, updates);
+  },
+);
+
+ipcMain.handle("vault:delete-box", async (_event: IpcMainInvokeEvent, id: string) => {
+  return deleteBox(id);
+});
+
+ipcMain.handle("vault:get-agent-boxes", async (_event: IpcMainInvokeEvent, agentId: string) => {
+  return getAgentBoxes(agentId);
+});
+
+ipcMain.handle("vault:get-box-content", async (_event: IpcMainInvokeEvent, boxId: string) => {
+  return getBoxContent(boxId);
+});
+
+ipcMain.handle(
+  "vault:add-entry",
+  async (_event: IpcMainInvokeEvent, boxId: string, input: { content: string; label?: string }) => {
+    return addEntry(boxId, input);
+  },
+);
+
+ipcMain.handle(
+  "vault:update-entry",
+  async (_event: IpcMainInvokeEvent, boxId: string, entryId: string, updates: { content?: string; label?: string }) => {
+    return updateEntry(boxId, entryId, updates);
+  },
+);
+
+ipcMain.handle(
+  "vault:delete-entry",
+  async (_event: IpcMainInvokeEvent, boxId: string, entryId: string) => {
+    return deleteEntry(boxId, entryId);
+  },
+);

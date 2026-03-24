@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import { toast, ToastContainer } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import { toast } from "react-toastify";
 
 import {
   Save,
@@ -20,11 +19,8 @@ import {
   Server,
   Thermometer,
   Zap,
-  Wallet,
-  Brain,
+  Info,
 } from "lucide-react";
-import { WalletConnect } from "./WalletConnect";
-import { AgentSoulSettings } from "./AgentSoulSettings";
 import {
   AIAgentConfig,
   AIProvider,
@@ -60,12 +56,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   scrollSection,
 }) => {
   // Ref for scrolling to sections
+  const agentsSectionRef = useRef<HTMLElement>(null);
   const nodesSectionRef = useRef<HTMLElement>(null);
 
   // Scroll to section when scrollSection prop is set
   useEffect(() => {
-    if (scrollSection === "nodes" && nodesSectionRef.current) {
-      nodesSectionRef.current.scrollIntoView({
+    const sectionMap: Record<string, React.RefObject<HTMLElement | null>> = {
+      agents: agentsSectionRef,
+      nodes: nodesSectionRef,
+    };
+
+    const targetSection = scrollSection ? sectionMap[scrollSection] : undefined;
+
+    if (targetSection?.current) {
+      targetSection.current.scrollIntoView({
         behavior: "smooth",
         block: "start",
       });
@@ -86,6 +90,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       { status: "idle" | "testing" | "success" | "error"; message?: string }
     >
   >({});
+  const [nameErrors, setNameErrors] = useState<Record<string, string>>({});
 
   const { themes, themeKey, setThemeKey } = useTheme();
 
@@ -267,36 +272,134 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
-  // Create new agent with default values
-  const createNewAgent = (): AIAgentConfig => ({
-    id: `agent-${Date.now()}`,
-    name: "New AI Agent",
-    provider: "claude",
-    apiKey: "",
-    model: DEFAULT_MODELS.claude[0],
-    maxTokens: 4096,
-    temperature: 0.7,
-    isActive: false,
-    createdAt: Date.now(),
-  });
+  const addAgent = async () => {
+    // Generate a unique name for the new agent
+    let baseName = "New AI Agent";
+    let uniqueName = baseName;
+    let counter = 2;
 
-  const addAgent = () => {
-    const newAgent = createNewAgent();
-    setAiAgents([...aiAgents, newAgent]);
-    setExpandedAgent(newAgent.id);
+    // Check if the name already exists and increment until we find a unique one
+    while (
+      aiAgents.some(
+        (agent) => agent.name.toLowerCase() === uniqueName.toLowerCase(),
+      )
+    ) {
+      uniqueName = `${baseName} ${counter}`;
+      counter++;
+    }
+
+    const newAgent: AIAgentConfig = {
+      id: `agent-${Date.now()}`,
+      name: uniqueName,
+      provider: "claude",
+      apiKey: "",
+      model: DEFAULT_MODELS.claude[0],
+      maxTokens: 4096,
+      temperature: 0.7,
+      isActive: false,
+      createdAt: Date.now(),
+    };
+
+    // Add to database first
+    try {
+      const result = await window.electronAPI.aiAgents.add(newAgent);
+      if (result.success) {
+        // Reload agents from database
+        const updatedAgents = await window.electronAPI.aiAgents.get();
+        if (updatedAgents) {
+          setAiAgents(updatedAgents);
+          setExpandedAgent(newAgent.id);
+          toast.success("Agent created");
+        }
+      } else {
+        toast.error(result.error || "Failed to create agent");
+      }
+    } catch (error) {
+      console.error("Error creating agent:", error);
+      toast.error("Failed to create agent");
+    }
   };
 
-  const updateAgent = (id: string, updates: Partial<AIAgentConfig>) => {
+  const updateAgent = async (id: string, updates: Partial<AIAgentConfig>) => {
+    // Check for duplicate names if name is being updated
+    if (updates.name !== undefined) {
+      const trimmedName = updates.name.trim();
+
+      // Check for empty name
+      if (trimmedName === "") {
+        setNameErrors((prev) => ({
+          ...prev,
+          [id]: "Agent name is required",
+        }));
+        return; // Don't update if name is empty
+      }
+
+      // Check for duplicate names
+      const isDuplicate = aiAgents.some(
+        (agent) =>
+          agent.id !== id &&
+          agent.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+      );
+
+      if (isDuplicate) {
+        setNameErrors((prev) => ({
+          ...prev,
+          [id]: "An agent with this name already exists",
+        }));
+        return; // Don't update if name is duplicate
+      } else {
+        // Clear error if name is valid
+        setNameErrors((prev) => {
+          const newErrors = { ...prev };
+          delete newErrors[id];
+          return newErrors;
+        });
+      }
+    }
+
+    // Update local state first for immediate UI feedback
     setAiAgents(
       aiAgents.map((agent) =>
         agent.id === id ? { ...agent, ...updates } : agent,
       ),
     );
+
+    // Persist to database
+    try {
+      const result = await window.electronAPI.aiAgents.update(id, updates);
+      if (!result.success) {
+        console.error("Failed to update agent:", result.error);
+        toast.error(result.error || "Failed to update agent");
+        // Reload agents from database to revert
+        const updatedAgents = await window.electronAPI.aiAgents.get();
+        if (updatedAgents) {
+          setAiAgents(updatedAgents);
+        }
+      }
+    } catch (error) {
+      console.error("Error updating agent:", error);
+      toast.error("Failed to update agent");
+    }
   };
 
-  const deleteAgent = (id: string) => {
-    setAiAgents(aiAgents.filter((agent) => agent.id !== id));
-    if (expandedAgent === id) setExpandedAgent(null);
+  const deleteAgent = async (id: string) => {
+    try {
+      const result = await window.electronAPI.aiAgents.delete(id);
+      if (result.success) {
+        // Reload agents from database
+        const updatedAgents = await window.electronAPI.aiAgents.get();
+        if (updatedAgents) {
+          setAiAgents(updatedAgents);
+        }
+        if (expandedAgent === id) setExpandedAgent(null);
+        toast.success("Agent deleted");
+      } else {
+        toast.error(result.error || "Failed to delete agent");
+      }
+    } catch (error) {
+      console.error("Error deleting agent:", error);
+      toast.error("Failed to delete agent");
+    }
   };
 
   const toggleApiKeyVisibility = (id: string) => {
@@ -331,22 +434,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       baseUrl: provider === "custom" ? "" : baseUrl,
     });
   };
-  const saveAgent = async (agent: AIAgentConfig) => {
-    const result = await window.electronAPI.aiAgents.add(agent);
-    if (result.success) {
-      // Reload the agents list to sync with database
-      const updatedAgents = await window.electronAPI.aiAgents.get();
-      if (updatedAgents) {
-        setAiAgents(updatedAgents);
-      }
-      // Collapse the form and show success toast
-      setExpandedAgent(null);
-      toast.success("Agent saved successfully");
-      console.log("agent saved");
-    } else {
-      toast.error(result.error || "Failed to save agent");
-    }
-  };
   useEffect(() => {
     // Set initial array of agents
     const getAgents = async () => {
@@ -366,202 +453,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       </h1>
 
       <div className="space-y-8">
-        {/* Interface Section */}
-        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
-          <h2 className="text-xl font-semibold mb-4 text-indigo-400 flex items-center gap-2">
-            <Layout size={20} />
-            Interface Settings
-          </h2>
-          <div className="space-y-4">
-            <div>
-              <span className="text-gray-200 font-medium block">Theme</span>
-              <p className="text-sm text-gray-500 mb-3">
-                Choose a color theme. Changes apply instantly and persist across
-                restarts.
-              </p>
-              <div className="grid gap-3 md:grid-cols-2">
-                {themes.map((theme) => (
-                  <button
-                    key={theme.key}
-                    onClick={() => setThemeKey(theme.key as ThemeKey)}
-                    className={`w-full text-left rounded-lg p-4 border transition-all backdrop-blur-sm hover:scale-[1.01]
-                      ${
-                        themeKey === theme.key
-                          ? "border-indigo-500/50 ring-2 ring-indigo-500/30"
-                          : "border-gray-800"
-                      }
-                    `}
-                    style={{
-                      backgroundColor: "var(--surface)",
-                      color: "var(--text)",
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <div className="text-lg font-semibold">
-                          {theme.name}
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {theme.description}
-                        </div>
-                      </div>
-                      {themeKey === theme.key && (
-                        <span className="text-xs px-2 py-1 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold">
-                          Active
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {(
-                        [
-                          "background",
-                          "surface",
-                          "accent",
-                          "primary",
-                          "warning",
-                          "success",
-                        ] as const
-                      ).map((token) => (
-                        <span
-                          key={token}
-                          className="h-8 w-8 rounded-lg border border-white/10"
-                          style={{ backgroundColor: theme.colors[token] }}
-                          title={token}
-                        />
-                      ))}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-gray-200 font-medium block">
-                  Classic Navigation Bar
-                </span>
-                <p className="text-sm text-gray-500">
-                  Show the traditional top address bar. Disabled by default for
-                  immersion.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowUrlBar && setShowUrlBar(!showUrlBar)}
-                className={`
-                  relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900
-                  ${showUrlBar ? "bg-indigo-600" : "bg-gray-700"}
-                `}
-              >
-                <span
-                  className={`
-                  inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out
-                  ${showUrlBar ? "translate-x-6" : "translate-x-1"}
-                `}
-                />
-              </button>
-            </div>
-
-            {/* Title Bar Style Setting */}
-            <div className="flex items-center justify-between pt-4 border-t border-gray-800">
-              <div>
-                <span className="text-gray-200 font-medium block">
-                  Window Title Bar
-                </span>
-                <p className="text-sm text-gray-500">
-                  Hidden shows styled controls. Default uses native OS title
-                  bar.
-                </p>
-              </div>
-              <div className="flex bg-gray-950 rounded-lg p-1 border border-gray-700">
-                <button
-                  onClick={async () => {
-                    if (updateSettings.titleBarStyle === "hidden") return;
-
-                    const result =
-                      await window.electronAPI?.showTitleBarConfirm?.();
-                    if (!result || result.buttonIndex === 2) return;
-
-                    await handleUpdateSettingChange("titleBarStyle", "hidden");
-
-                    if (result.buttonIndex === 0) {
-                      window.electronAPI?.restartWindow?.();
-                    } else {
-                      toast.info("Change will apply on next restart");
-                    }
-                  }}
-                  className={`
-                    px-3 py-1.5 rounded-md text-sm font-medium transition-all
-                    ${
-                      updateSettings.titleBarStyle !== "default"
-                        ? "bg-indigo-600 text-white shadow-sm"
-                        : "text-gray-400 hover:text-gray-200"
-                    }
-                  `}
-                >
-                  Hidden
-                </button>
-                <button
-                  onClick={async () => {
-                    if (updateSettings.titleBarStyle === "default") return;
-
-                    const result =
-                      await window.electronAPI?.showTitleBarConfirm?.();
-                    if (!result || result.buttonIndex === 2) return;
-
-                    await handleUpdateSettingChange("titleBarStyle", "default");
-
-                    if (result.buttonIndex === 0) {
-                      window.electronAPI?.restartWindow?.();
-                    } else {
-                      toast.info("Change will apply on next restart");
-                    }
-                  }}
-                  className={`
-                    px-3 py-1.5 rounded-md text-sm font-medium transition-all
-                    ${
-                      updateSettings.titleBarStyle === "default"
-                        ? "bg-gray-800 text-white shadow-sm"
-                        : "text-gray-400 hover:text-gray-200"
-                    }
-                  `}
-                >
-                  Default
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Startup Section */}
-        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
-          <h2 className="text-xl font-semibold mb-4 text-indigo-400">
-            On Startup
-          </h2>
-          <div className="space-y-4">
-            <label className="block">
-              <span className="text-gray-200 font-medium">
-                Default Landing URL
-              </span>
-              <p className="text-sm text-gray-500 mb-2">
-                The page that opens when you click Home or open a new tab.
-              </p>
-              <input
-                type="text"
-                value={homeUrl}
-                onChange={(e) => setHomeUrl(e.target.value)}
-                className="w-full max-w-lg px-4 py-2 bg-gray-950 border border-gray-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-gray-100 placeholder-gray-600"
-                placeholder="browser://home"
-              />
-            </label>
-          </div>
-        </section>
 
         {/* AI Agents Section */}
-        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
+        <section
+          className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm"
+          id="agents"
+          ref={agentsSectionRef}
+        >
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-semibold text-indigo-400 flex items-center gap-2">
               <Bot size={20} />
-              AI Neural Agents
+              AI Agents
             </h2>
             <button
               onClick={addAgent}
@@ -640,15 +542,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           onClick={async (e) => {
                             e.stopPropagation();
                             deleteAgent(agent.id);
-                            const result =
-                              await window.electronAPI.aiAgents.delete(
-                                agent.id,
-                              );
-                            if (result?.success) {
-                              toast.success("Agent deleted successfully");
-                            } else {
-                              toast.error("Failed to delete agent");
-                            }
+                            await window.electronAPI.aiAgents.delete(agent.id);
                           }}
                           className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                         >
@@ -673,8 +567,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                               onChange={(e) =>
                                 updateAgent(agent.id, { name: e.target.value })
                               }
-                              className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-gray-100"
+                              className={`w-full px-3 py-2 bg-gray-950 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-gray-100 ${
+                                nameErrors[agent.id]
+                                  ? "border-red-500 focus:border-red-500"
+                                  : "border-gray-700 focus:border-indigo-500"
+                              }`}
                             />
+                            {nameErrors[agent.id] && (
+                              <p className="mt-1 text-xs text-red-400 flex items-center gap-1">
+                                <XCircle size={12} />
+                                {nameErrors[agent.id]}
+                              </p>
+                            )}
                           </label>
 
                           {/* Provider Selection */}
@@ -837,6 +741,42 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           </label>
                         </div>
 
+                        {/* Rich UI Toggle */}
+                        <div className="flex items-center justify-between py-3 px-1">
+                          <div>
+                            <span className="text-sm text-gray-300 flex items-center gap-1.5">
+                              Rich Visual Responses
+                              <span className="relative group">
+                                <Info size={13} className="text-gray-500 cursor-help" />
+                                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 w-64 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 pointer-events-none z-50 shadow-lg">
+                                  Enables the agent to display data using visual elements like charts, tables, and cards instead of plain text. This may increase token usage per response. Enable on models where richer output is worth the cost.
+                                </span>
+                              </span>
+                            </span>
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              Render charts, tables, and cards inline in chat
+                            </p>
+                          </div>
+                          <button
+                            onClick={() =>
+                              updateAgent(agent.id, {
+                                richUI: !agent.richUI,
+                              })
+                            }
+                            className={`
+                              relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0
+                              ${agent.richUI ? "bg-indigo-600" : "bg-gray-700"}
+                            `}
+                          >
+                            <span
+                              className={`
+                                inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out
+                                ${agent.richUI ? "translate-x-6" : "translate-x-1"}
+                              `}
+                            />
+                          </button>
+                        </div>
+
                         {/* Actions Row */}
                         <div className="flex items-center justify-between pt-4 border-t border-gray-800">
                           <div className="flex items-center gap-3">
@@ -915,46 +855,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                             {testResult.message}
                           </p>
                         )}
-
-                        {/* Agent Soul Settings */}
-                        <div className="mt-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
-                          <AgentSoulSettings
-                            agentId={agent.id}
-                            agentName={agent.name}
-                          />
-                        </div>
-
-                        <div className="w-full flex justify-end">
-                          <button
-                            onClick={() => saveAgent(agent)}
-                            className="flex items-center gap-2 px-4 py-2 bg-indigo-900/30 hover:bg-indigo-900/50 text-indigo-400 border border-indigo-500/30 rounded-lg transition-all hover:scale-[1.02]"
-                          >
-                            <span className="text-xs font-bold tracking-wider uppercase">
-                              Save
-                            </span>
-                          </button>{" "}
-                        </div>
                       </div>
                     )}
                   </div>
                 );
               })}
-
             </div>
           )}
-        </section>
-
-        {/* Wallet Section */}
-        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
-          <h2 className="text-xl font-semibold text-indigo-400 flex items-center gap-2 mb-6">
-            <Wallet size={20} />
-            Wallet
-          </h2>
-          <p className="text-sm text-gray-500 mb-4">
-            Connect your wallet to manage Hypercycle nodes and ANFEs on Ethereum and Base networks.
-            Link your on-chain nodes to AI agents for intelligent routing.
-          </p>
-          <WalletConnect agents={aiAgents} />
         </section>
 
         {/* Hypercycle Nodes Section */}
@@ -1208,6 +1115,196 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           )}
         </section>
 
+        {/* Interface Section */}
+        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
+          <h2 className="text-xl font-semibold mb-4 text-indigo-400 flex items-center gap-2">
+            <Layout size={20} />
+            Interface Settings
+          </h2>
+          <div className="space-y-4">
+            <div>
+              <span className="text-gray-200 font-medium block">Theme</span>
+              <p className="text-sm text-gray-500 mb-3">
+                Choose a color theme. Changes apply instantly and persist across
+                restarts.
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                {themes.map((theme) => (
+                  <button
+                    key={theme.key}
+                    onClick={() => setThemeKey(theme.key as ThemeKey)}
+                    className={`w-full text-left rounded-lg p-4 border transition-all backdrop-blur-sm hover:scale-[1.01]
+                      ${
+                        themeKey === theme.key
+                          ? "border-indigo-500/50 ring-2 ring-indigo-500/30"
+                          : "border-gray-800"
+                      }
+                    `}
+                    style={{
+                      backgroundColor: "var(--surface)",
+                      color: "var(--text)",
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="text-lg font-semibold">
+                          {theme.name}
+                        </div>
+                        <div className="text-sm text-gray-500">
+                          {theme.description}
+                        </div>
+                      </div>
+                      {themeKey === theme.key && (
+                        <span className="text-xs px-2 py-1 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {(
+                        [
+                          "background",
+                          "surface",
+                          "accent",
+                          "primary",
+                          "warning",
+                          "success",
+                        ] as const
+                      ).map((token) => (
+                        <span
+                          key={token}
+                          className="h-8 w-8 rounded-lg border border-white/10"
+                          style={{ backgroundColor: theme.colors[token] }}
+                          title={token}
+                        />
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-gray-200 font-medium block">
+                  Classic Navigation Bar
+                </span>
+                <p className="text-sm text-gray-500">
+                  Show the traditional top address bar. Disabled by default for
+                  immersion.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowUrlBar && setShowUrlBar(!showUrlBar)}
+                className={`
+                  relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900
+                  ${showUrlBar ? "bg-indigo-600" : "bg-gray-700"}
+                `}
+              >
+                <span
+                  className={`
+                  inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out
+                  ${showUrlBar ? "translate-x-6" : "translate-x-1"}
+                `}
+                />
+              </button>
+            </div>
+
+            {/* Title Bar Style Setting */}
+            <div className="flex items-center justify-between pt-4 border-t border-gray-800">
+              <div>
+                <span className="text-gray-200 font-medium block">
+                  Window Title Bar
+                </span>
+                <p className="text-sm text-gray-500">
+                  Hidden shows styled controls. Default uses native OS title
+                  bar.
+                </p>
+              </div>
+              <div className="flex bg-gray-950 rounded-lg p-1 border border-gray-700">
+                <button
+                  onClick={async () => {
+                    if (updateSettings.titleBarStyle === "hidden") return;
+
+                    const result =
+                      await window.electronAPI?.showTitleBarConfirm?.();
+                    if (!result || result.buttonIndex === 2) return;
+
+                    await handleUpdateSettingChange("titleBarStyle", "hidden");
+
+                    if (result.buttonIndex === 0) {
+                      window.electronAPI?.restartWindow?.();
+                    } else {
+                      toast.info("Change will apply on next restart");
+                    }
+                  }}
+                  className={`
+                    px-3 py-1.5 rounded-md text-sm font-medium transition-all
+                    ${
+                      updateSettings.titleBarStyle !== "default"
+                        ? "bg-indigo-600 text-white shadow-sm"
+                        : "text-gray-400 hover:text-gray-200"
+                    }
+                  `}
+                >
+                  Hidden
+                </button>
+                <button
+                  onClick={async () => {
+                    if (updateSettings.titleBarStyle === "default") return;
+
+                    const result =
+                      await window.electronAPI?.showTitleBarConfirm?.();
+                    if (!result || result.buttonIndex === 2) return;
+
+                    await handleUpdateSettingChange("titleBarStyle", "default");
+
+                    if (result.buttonIndex === 0) {
+                      window.electronAPI?.restartWindow?.();
+                    } else {
+                      toast.info("Change will apply on next restart");
+                    }
+                  }}
+                  className={`
+                    px-3 py-1.5 rounded-md text-sm font-medium transition-all
+                    ${
+                      updateSettings.titleBarStyle === "default"
+                        ? "bg-gray-800 text-white shadow-sm"
+                        : "text-gray-400 hover:text-gray-200"
+                    }
+                  `}
+                >
+                  Default
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Startup Section */}
+        <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
+          <h2 className="text-xl font-semibold mb-4 text-indigo-400">
+            On Startup
+          </h2>
+          <div className="space-y-4">
+            <label className="block">
+              <span className="text-gray-200 font-medium">
+                Default Landing URL
+              </span>
+              <p className="text-sm text-gray-500 mb-2">
+                The page that opens when you click Home or open a new tab.
+              </p>
+              <input
+                type="text"
+                value={homeUrl}
+                onChange={(e) => setHomeUrl(e.target.value)}
+                className="w-full max-w-lg px-4 py-2 bg-gray-950 border border-gray-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-gray-100 placeholder-gray-600"
+                placeholder="browser://home"
+              />
+            </label>
+          </div>
+        </section>
+
         {/* Updates Section */}
         <section className="bg-gray-900/50 p-6 rounded-xl border border-gray-800 backdrop-blur-sm">
           <h2 className="text-xl font-semibold mb-4 text-indigo-400">
@@ -1277,6 +1374,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
         </section>
 
+
         <section>
           <GmailClient />
         </section>
@@ -1289,8 +1387,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </button>
         </div>
       </div>
-
-      <ToastContainer theme="dark" />
     </div>
   );
 };

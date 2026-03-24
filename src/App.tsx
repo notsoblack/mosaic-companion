@@ -3,12 +3,14 @@ import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { ContentArea } from "./components/ContentArea";
 import { TabStrip } from "./components/TabStrip";
-import { BottomBar, InputMode } from "./components/BottomBar";
+import { BottomBar } from "./components/BottomBar";
 import { DemoOverlay } from "./components/DemoOverlay";
 import { CommandPalette } from "./components/CommandPalette";
 import { SandboxWarningBanner } from "./components/SandboxWarningBanner";
-import { INTERNAL_HOME_URL, INTERNAL_CHAT_URL, Tab } from "./types/types";
+import { INTERNAL_HOME_URL, INTERNAL_CHAT_URL, INTERNAL_ONBOARDING_URL, Tab } from "./types/types";
 import { useTheme } from "./ThemeProvider";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 function App() {
   // --- Persistent State ---
@@ -33,10 +35,7 @@ function App() {
   const [hasAgents, setHasAgents] = useState(false);
   const [titleBarStyle, setTitleBarStyle] = useState<string>("hidden");
 
-  // Input mode state (agent or normal)
-  const [inputMode, setInputMode] = useState<InputMode>("normal");
-
-  // Check for configured agents on mount
+  // Check for configured agents and first-run onboarding
   useEffect(() => {
     const checkAgents = async () => {
       try {
@@ -45,7 +44,20 @@ function App() {
           (a: { isActive: boolean }) => a.isActive,
         );
         setHasAgents(activeAgents.length > 0);
-        // If we have agents and user hasn't explicitly chosen, stay in current mode
+
+        // If agents already exist but onboarding flag wasn't set (returning user), mark done
+        const onboardingDone = localStorage.getItem("mosaic_onboarding_complete");
+        if (!onboardingDone && agents.length > 0) {
+          localStorage.setItem("mosaic_onboarding_complete", "true");
+          // Navigate away from onboarding if we landed there
+          setTabs((prev) =>
+            prev.map((tab) =>
+              tab.history.present === INTERNAL_ONBOARDING_URL
+                ? { ...tab, title: "Home", history: { ...tab.history, present: homeUrl } }
+                : tab,
+            ),
+          );
+        }
       } catch {
         setHasAgents(false);
       }
@@ -70,14 +82,16 @@ function App() {
 
   // --- Tab & Session State ---
   const [tabs, setTabs] = useState<Tab[]>(() => {
-    // Initial tab
+    // Check if onboarding is needed (sync check — agent count verified async below)
+    const onboardingDone = localStorage.getItem("mosaic_onboarding_complete");
+    const initialUrl = onboardingDone ? homeUrl : INTERNAL_ONBOARDING_URL;
     return [
       {
         id: Date.now().toString(),
-        title: "Home",
+        title: onboardingDone ? "Home" : "Welcome",
         history: {
           past: [],
-          present: homeUrl,
+          present: initialUrl,
           future: [],
         },
         isLoading: false,
@@ -90,13 +104,6 @@ function App() {
 
   // Helper to get active tab
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
-
-  // Auto-switch to agent mode when on AI Chat page
-  useEffect(() => {
-    if (activeTab.history.present === INTERNAL_CHAT_URL && hasAgents) {
-      setInputMode("agent");
-    }
-  }, [activeTab.history.present, hasAgents]);
 
   // Persist preferences
   useEffect(() => {
@@ -250,6 +257,11 @@ function App() {
     });
   };
 
+  const handleOnboardingComplete = () => {
+    localStorage.setItem("mosaic_onboarding_complete", "true");
+    setHasAgents(true);
+  };
+
   const handleRefresh = () => {
     const current = activeTab.history.present;
     updateActiveTabHistory({ ...activeTab.history, present: "" });
@@ -265,20 +277,9 @@ function App() {
       return;
     }
 
-    // If in agent mode, navigate to AI Chat and send message
-    if (inputMode === "agent" && hasAgents) {
-      // Store the message to be picked up by ChatView
-      sessionStorage.setItem("pendingChatMessage", text);
-      navigateTo(INTERNAL_CHAT_URL);
-      return;
-    }
-
-    // Normal mode: URL or search
-    if (text.startsWith("http")) {
-      navigateTo(text);
-    } else {
-      navigateTo(`https://www.google.com/search?q=${encodeURIComponent(text)}`);
-    }
+    // Always navigate to AI Chat and send message
+    sessionStorage.setItem("pendingChatMessage", text);
+    navigateTo(INTERNAL_CHAT_URL);
   };
 
   // Keyboard shortcut for command palette only
@@ -359,13 +360,15 @@ function App() {
       {/* Full Screen Demo Overlay */}
       {isDemoActive && <DemoOverlay onClose={() => setIsDemoActive(false)} />}
 
-      {/* Left Panel */}
-      <Sidebar
-        isOpen={isSidebarOpen}
-        onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
-        onNavigate={navigateTo}
-        currentUrl={activeTab.history.present}
-      />
+      {/* Left Panel — hidden during onboarding */}
+      {activeTab.history.present !== INTERNAL_ONBOARDING_URL && (
+        <Sidebar
+          isOpen={isSidebarOpen}
+          onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+          onNavigate={navigateTo}
+          currentUrl={activeTab.history.present}
+        />
+      )}
 
       {/* Main Browser Area */}
       <main
@@ -421,7 +424,7 @@ function App() {
           style={{ backgroundColor: "var(--surface)" }}
         >
           {/* Sidebar toggle button when sidebar is closed */}
-          {!showUrlBar && !isSidebarOpen && !isDemoActive && (
+          {!showUrlBar && !isSidebarOpen && !isDemoActive && activeTab.history.present !== INTERNAL_ONBOARDING_URL && (
             <button
               onClick={() => setIsSidebarOpen(true)}
               className="absolute top-4 left-4 z-50 p-2 rounded-full transition-colors backdrop-blur-md"
@@ -485,6 +488,7 @@ function App() {
                   onUpdateTab={(updates) => handleUpdateTab(tab.id, updates)}
                   onStartDemo={() => setIsDemoActive(true)}
                   onCreateNewChatTab={handleNewChatTab}
+                  onOnboardingComplete={handleOnboardingComplete}
                   tabId={tab.id}
                 />
               </div>
@@ -492,16 +496,15 @@ function App() {
           })}
         </div>
 
-        {/* Bottom AI Input Bar - hide when on AI Chat page (ChatView has its own input) */}
-        {!isDemoActive && activeTab.history.present !== INTERNAL_CHAT_URL && (
+        {/* Bottom AI Input Bar - hide during onboarding and on AI Chat page */}
+        {!isDemoActive && activeTab.history.present !== INTERNAL_CHAT_URL && activeTab.history.present !== INTERNAL_ONBOARDING_URL && (
           <BottomBar
             onSubmit={handleBottomBarSubmit}
-            mode={inputMode}
-            onModeChange={setInputMode}
             hasAgents={hasAgents}
           />
         )}
       </main>
+      <ToastContainer theme="dark" position="bottom-right" />
     </div>
   );
 }

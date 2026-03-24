@@ -18,14 +18,41 @@ import {
   MessageSquare,
   Server,
   RefreshCw,
+  BrainCircuit,
+  Plug,
+  Lock,
+  Zap,
+  Activity,
+  Trophy,
+  BarChart3,
+  Globe,
+  Layers,
+  Box,
+  Shield,
+  Hash,
 } from "lucide-react";
 import {
   SidebarItem,
   INTERNAL_HOME_URL,
+  INTERNAL_MCP_URL,
+  INTERNAL_MOSAICBOT_URL,
+  INTERNAL_MULTI_CHAT_URL,
   INTERNAL_SETTINGS_URL,
   INTERNAL_CHAT_URL,
+  INTERNAL_WEB3_URL,
+  INTERNAL_VAULT_URL,
+  INTERNAL_SANDBOX_URL,
+  INTERNAL_TOOL_PANEL_PREFIX,
 } from "../types/types";
 import { AIAgentConfig, PROVIDER_INFO } from "../types/ai";
+import type { InstalledTool } from "../../electron/integrations/sandbox/types";
+
+/** Map manifest icon names → lucide components (shared with ToolPanelView) */
+const TOOL_ICON_MAP: Record<string, React.FC<{ size?: number; className?: string }>> = {
+  server: Server, zap: Zap, cpu: Cpu, activity: Activity, trophy: Trophy,
+  chart: BarChart3, globe: Globe, database: Database, layers: Layers,
+  box: Box, shield: Shield, hash: Hash,
+};
 
 interface SidebarProps {
   isOpen: boolean;
@@ -44,6 +71,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   // Hypercycle nodes state
   const [nodes, setNodes] = useState<HypercycleNode[]>([]);
+  const [pinnedTools, setPinnedTools] = useState<InstalledTool[]>([]);
 
   // Live status tracking: { [nodeId]: { isLive, checking, lastChecked, latency } }
   const [nodeStatuses, setNodeStatuses] = useState<
@@ -146,10 +174,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const interval = setInterval(checkAllNodes, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [nodes, checkNodeConnection]);
+
+  // Load pinned sandbox tools (refresh periodically to reflect pin changes)
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPinnedTools = async () => {
+      try {
+        const res = await window.electronAPI.toolSandbox.listInstalled();
+        if (!cancelled && res.success && res.data) {
+          setPinnedTools(
+            res.data.filter(
+              (tool) => Boolean(tool.pinned) && (tool.manifest.ui?.panels?.length ?? 0) > 0,
+            ),
+          );
+        }
+      } catch {
+        if (!cancelled) setPinnedTools([]);
+      }
+    };
+
+    loadPinnedTools();
+    const interval = setInterval(loadPinnedTools, 15_000);
+
+    // Refresh immediately when pin state changes (dispatched by SandboxPage)
+    const onPinChange = () => loadPinnedTools();
+    window.addEventListener("pinned-tools-changed", onPinChange);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener("pinned-tools-changed", onPinChange);
+    };
+  }, []);
   // Navigation Items
   const navItems: SidebarItem[] = [
     { id: "home", label: "Home", icon: "Home", url: INTERNAL_HOME_URL },
     { id: "chat", label: "AI Chat", icon: "Bot", url: INTERNAL_CHAT_URL },
+    {
+      id: "mosaicbot",
+      label: "Mosaic Bot",
+      icon: "BrainCircuit",
+      url: INTERNAL_MOSAICBOT_URL,
+    },
+    { id: "mcp", label: "MCP Servers", icon: "Plug", url: INTERNAL_MCP_URL },
+    {
+      id: "multi-chat",
+      label: "Chat Rooms",
+      icon: "MessageSquare",
+      url: INTERNAL_MULTI_CHAT_URL,
+    },
+    { id: "web3", label: "Web3", icon: "Eth", url: INTERNAL_WEB3_URL },
+    { id: "vault", label: "Vault", icon: "Lock", url: INTERNAL_VAULT_URL },
+    { id: "sandbox", label: "Tool Sandbox", icon: "Cpu", url: INTERNAL_SANDBOX_URL },
     {
       id: "bookmarks",
       label: "Bookmarks",
@@ -201,6 +278,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
         return <Clock className={className} />;
       case "Bot":
         return <Bot className={className} />;
+      case "BrainCircuit":
+        return <BrainCircuit className={className} />;
+      case "Plug":
+        return <Plug className={className} />;
+      case "MessageSquare":
+        return <MessageSquare className={className} />;
+      case "Eth":
+        return (
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 256 417"
+            className={className}
+            fill="currentColor"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M127.961 0L125.166 9.5V285.168L127.961 287.958L255.923 212.32L127.961 0Z"
+              opacity="0.8"
+            />
+            <path d="M127.962 0L0 212.32L127.962 287.959V154.158V0Z" />
+            <path
+              d="M127.961 312.187L126.386 314.107V412.306L127.961 416.905L255.999 236.587L127.961 312.187Z"
+              opacity="0.8"
+            />
+            <path d="M127.962 416.905V312.187L0 236.587L127.962 416.905Z" />
+          </svg>
+        );
+      case "Lock":
+        return <Lock className={className} />;
+      case "Cpu":
+        return <Cpu className={className} />;
       default:
         return <LayoutGrid className={className} />;
     }
@@ -283,6 +392,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
         </nav>
+
+        {/* 1b. Pinned Tools */}
+        {pinnedTools.length > 0 && (
+          <div className="space-y-2 px-3">
+            <div className="px-3 mb-2 flex items-center justify-between text-[10px] font-bold text-gray-600 uppercase tracking-widest">
+              <span>Pinned Tools</span>
+              <Cpu size={12} />
+            </div>
+
+            {pinnedTools.map((tool) => {
+              const url = `${INTERNAL_TOOL_PANEL_PREFIX}${tool.manifest.id}`;
+              const isActive = currentUrl === url;
+
+              return (
+                <button
+                  key={tool.manifest.id}
+                  onClick={() => onNavigate(url)}
+                  className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all relative group border ${
+                    isActive
+                      ? "bg-indigo-900/20 text-gray-100 border-indigo-500/20"
+                      : "hover-surface-accent text-gray-400 hover:text-gray-200 border-transparent"
+                  }`}
+                >
+                  {(() => {
+                    const IconComp = TOOL_ICON_MAP[tool.manifest.icon ?? ""] ?? Cpu;
+                    return <IconComp size={16} className="mr-3 text-indigo-400" />;
+                  })()}
+                  <div className="flex-1 text-left min-w-0">
+                    <span className="text-sm block truncate">{tool.manifest.displayName}</span>
+                    <span className="text-[10px] text-gray-600 font-mono block truncate">
+                      v{tool.manifest.version}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* 2. Active AI Agents */}
         {activeAgents.length > 0 && (
@@ -504,7 +651,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Footer */}
       <div className="p-4 border-t border-gray-900 shrink-0 bg-black min-w-[18rem]">
         <button
-          onClick={() => onNavigate(INTERNAL_SETTINGS_URL)}
+          onClick={() => onNavigate(INTERNAL_SETTINGS_URL + "#agents")}
           className="flex items-center justify-center w-full bg-indigo-900/20 hover:bg-indigo-900/40 text-gray-100 border border-indigo-500/20 rounded-lg p-3 transition-all hover:scale-[1.02]"
         >
           <Plus size={16} />
