@@ -11,11 +11,11 @@ interface StreamCallbacks {
 
 export class AIService {
   // Get system prompt from agent soul
-  private static async getSystemPrompt(config: AIAgentConfig): Promise<string | null> {
+  private static async getSystemPrompt(config: AIAgentConfig, builderEnabled: boolean = false): Promise<string | null> {
     try {
       const soul = await AgentSoulService.getSoul(config.id);
       if (soul) {
-        return AgentSoulService.generateSystemPrompt(soul);
+        return AgentSoulService.generateSystemPrompt(soul, builderEnabled);
       }
     } catch (e) {
       console.error('[AIService] Error getting soul:', e);
@@ -26,9 +26,10 @@ export class AIService {
   // Inject system prompt into messages
   private static async injectSystemPrompt(
     config: AIAgentConfig, 
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    builderEnabled: boolean = false
   ): Promise<ChatMessage[]> {
-    const systemPrompt = await this.getSystemPrompt(config);
+    const systemPrompt = await this.getSystemPrompt(config, builderEnabled);
     
     if (systemPrompt) {
       // Check if there's already a system message
@@ -319,10 +320,11 @@ export class AIService {
   static async sendMessage(
     config: AIAgentConfig,
     messages: ChatMessage[],
-    callbacks?: StreamCallbacks
+    callbacks?: StreamCallbacks,
+    builderEnabled: boolean = false
   ): Promise<string> {
     // Inject soul system prompt if available
-    const messagesWithSoul = await this.injectSystemPrompt(config, messages);
+    const messagesWithSoul = await this.injectSystemPrompt(config, messages, builderEnabled);
     
     // Extract memories from conversation (async, non-blocking)
     this.extractMemoriesAsync(config.id, messages).catch(e => 

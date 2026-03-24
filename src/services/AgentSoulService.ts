@@ -145,7 +145,7 @@ export class AgentSoulService {
   }
 
   // Generate system prompt from soul
-  static generateSystemPrompt(soul: AgentSoulConfig): string {
+  static generateSystemPrompt(soul: AgentSoulConfig, builderEnabled: boolean = false): string {
     const { personality, memory } = soul;
     
     const parts: string[] = [];
@@ -183,6 +183,39 @@ export class AgentSoulService {
     if (responseStyle.useMarkdown) parts.push('- Use markdown formatting');
     if (responseStyle.showReasoning) parts.push('- Show your reasoning');
     if (responseStyle.askFollowUp) parts.push('- Ask follow-up questions');
+    
+    // Builder mode instructions
+    if (builderEnabled) {
+      parts.push('\n## 🔧 BUILDER MODE ENABLED');
+      parts.push('\nYou have EXECUTION CAPABILITIES. You can:');
+      parts.push('\n### Shell Commands');
+      parts.push('Execute any shell command:');
+      parts.push('```json');
+      parts.push('{"action": "shell", "command": "ls -la"}');
+      parts.push('```');
+      parts.push('\n### File Operations');
+      parts.push('```json');
+      parts.push('{"action": "read", "path": "./file.txt"}');
+      parts.push('{"action": "write", "path": "./file.txt", "content": "text here"}');
+      parts.push('{"action": "list", "path": "./directory"}');
+      parts.push('```');
+      parts.push('\n### Network Requests');
+      parts.push('```json');
+      parts.push('{"action": "fetch", "url": "https://api.example.com/data"}');
+      parts.push('{"action": "graphql", "url": "https://api.studio.thegraph.com/query/.../latest", "query": "{ ... }"}');
+      parts.push('```');
+      parts.push('\n### Git Operations');
+      parts.push('```json');
+      parts.push('{"action": "clone", "repo": "https://github.com/user/repo.git", "target": "./directory"}');
+      parts.push('```');
+      parts.push('\n### Memory (Persistent)');
+      parts.push('```json');
+      parts.push('{"action": "remember", "type": "fact", "key": "user_name", "value": "Mauri", "importance": 8}');
+      parts.push('{"action": "recall", "query": "user preferences"}');
+      parts.push('```');
+      parts.push('\n**Format**: Always use JSON code blocks for execution requests. I will execute them and return results.');
+      parts.push('\n**Safety**: You can execute commands, read/write files, fetch URLs, and clone repos.');
+    }
     
     // Long-term memory
     const longTerm = memory.longTerm;

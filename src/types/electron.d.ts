@@ -1,5 +1,40 @@
 // Electron API types - optional in browser mode
 
+interface NetworkFetchOptions {
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  headers?: Record<string, string>;
+  body?: string;
+  timeout?: number;
+}
+
+interface NetworkFetchResponse {
+  success: boolean;
+  status?: number;
+  headers?: Record<string, string>;
+  data?: string;
+  error?: string;
+}
+
+interface GraphqlResponse {
+  success: boolean;
+  status?: number;
+  data?: any;
+  error?: string;
+  raw?: string;
+}
+
+interface ShellExecuteOptions {
+  cwd?: string;
+  timeout?: number;
+}
+
+interface ShellExecuteResponse {
+  success: boolean;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+}
+
 interface ElectronAPI {
   logInput: (text: string) => Promise<void>;
   getCsvPath: () => Promise<string>;
@@ -45,6 +80,13 @@ interface ElectronAPI {
     maximize: () => Promise<void>;
     close: () => Promise<void>;
     isMaximized: () => Promise<boolean>;
+  };
+  network: {
+    fetch: (url: string, options?: NetworkFetchOptions) => Promise<NetworkFetchResponse>;
+    graphql: (url: string, query: string, variables?: Record<string, any>) => Promise<GraphqlResponse>;
+  };
+  shell: {
+    execute: (command: string, options?: ShellExecuteOptions) => Promise<ShellExecuteResponse>;
   };
 }
 
