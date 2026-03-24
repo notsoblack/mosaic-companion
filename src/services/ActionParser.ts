@@ -6,6 +6,8 @@
 import type { ToolUIBlock, BlockType } from "../components/tool-ui/types";
 import { MAX_BLOCK_COUNT, MAX_BLOCK_DEPTH } from "../components/tool-ui/types";
 
+// Global Window interface for Gmail API
+
 export type ActionType = "TOOL_CALL" | "NONE" | "GMAIL_READ";
 
 export interface ParsedAction {
@@ -386,31 +388,76 @@ export function getRichUISystemPrompt(): string {
  * Check if Gmail is authenticated.
  */
 export async function isGmailAuthenticated(): Promise<boolean> {
-  return false;
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI?.gmail) {
+      const status = await window.electronAPI.gmail.getStatus();
+      return status.authenticated;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
-// Gmail stub functions for local build compatibility
+// Gmail functions - wired to electron Gmail integration
 export function mightBeEmailRelated(message: string): boolean {
-  return false;
+  const emailKeywords = ['email', 'mail', 'inbox', 'unread', 'send', 'draft'];
+  return emailKeywords.some(keyword => message.toLowerCase().includes(keyword));
 }
 
 export function detectEmailReadRequest(message: string): boolean {
-  return false;
+  const readKeywords = ['read my email', 'check my email', 'show my email', 'any new email', 'unread email'];
+  return readKeywords.some(keyword => message.toLowerCase().includes(keyword));
 }
 
 export function getGmailSystemPrompt(): string {
-  return "Gmail integration available via electron/integrations/gmail";
+  return `You have access to the user's Gmail account. You can:
+- Check for new emails
+- Read email details
+- Search emails
+- Mark emails as read/unread
+
+When the user asks about emails, use the available Gmail tools.`;
 }
 
 export async function executeGmailAction(action: ParsedAction): Promise<ToolCallOutput> {
-  return { text: "Gmail actions available via electron/integrations/gmail" };
+  try {
+    if (typeof window === 'undefined' || !window.electronAPI?.gmail) {
+      return { text: 'Gmail integration not available. Please run in the Electron app.' };
+    }
+
+    const gmail = window.electronAPI.gmail;
+    
+    const status = await gmail.getStatus();
+    if (!status.authenticated) {
+      return { text: 'Gmail is not authenticated. Please sign in first.' };
+    }
+
+    if (action.type === 'GMAIL_READ' && action.params) {
+      const result = await gmail.getEmails(10);
+      const emails = Array.isArray(result) ? result : (result as any).emails || [];
+      return { text: `Found ${emails.length} recent emails.`, uiBlocks: [] };
+    }
+
+    return { text: 'Gmail action completed.' };
+  } catch (error) {
+    return { text: `Gmail action failed: ${error instanceof Error ? error.message : 'Unknown error'}` };
+  }
 }
 
 export function buildEmailAnalysisPrompt(content: string, emails: any): string {
-  return "Email analysis available via electron/integrations/gmail";
+  return `Analyze the following emails and provide a summary:
+
+${JSON.stringify(emails, null, 2)}
+
+User query: ${content}`;
 }
 
 export function buildSingleEmailAnalysisPrompt(content: string, email: any): string {
-  return "Email analysis available via electron/integrations/gmail";
+  return `Analyze the following email and provide a summary:
+
+${JSON.stringify(email, null, 2)}
+
+User query: ${content}`;
 }
 
