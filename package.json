@@ -43,6 +43,7 @@
     "arm64"
   ],
   "dependencies": {
+    "@blockfrost/blockfrost-js": "^6.1.1",
     "@extism/extism": "^2.0.0-rc13",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@walletconnect/ethereum-provider": "^2.23.8",
@@ -54,6 +55,7 @@
     "google-auth-library": "^10.5.0",
     "googleapis": "^170.0.0",
     "gtoken": "^8.0.0",
+    "helmet": "^8.1.0",
     "jwa": "^2.0.1",
     "jws": "^4.0.1",
     "lucide-react": "^0.562.0",

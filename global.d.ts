@@ -327,6 +327,86 @@ declare global {
       dialog: {
         openFile: (options?: { filters?: Array<{ name: string; extensions: string[] }> }) => Promise<string | null>;
       };
+
+      // Midnight Network API
+      midnight: {
+        init: () => Promise<{ success: boolean; error?: string }>;
+        createNode: (config: {
+          type: "validator" | "full" | "light";
+          stake: number;
+          privacy: "public" | "shielded" | "private";
+          delegation: "user" | "agent" | "hybrid";
+          agentId?: string;
+        }) => Promise<{
+          success: boolean;
+          node?: {
+            nodeId: string;
+            endpoint: string;
+            privacyKey: string;
+            status: "deploying" | "active" | "stopped" | "error";
+            createdAt: number;
+          };
+          error?: string;
+        }>;
+        delegate: (nodeId: string, agentId: string) => Promise<{
+          success: boolean;
+          delegation?: {
+            delegationId: string;
+            nodeId: string;
+            agentId: string;
+            permissions: string[];
+            createdAt: number;
+          };
+          error?: string;
+        }>;
+        getStatus: (nodeId: string) => Promise<{
+          success: boolean;
+          status?: {
+            nodeId: string;
+            endpoint: string;
+            privacyKey: string;
+            status: "deploying" | "active" | "stopped" | "error";
+            createdAt: number;
+          };
+          error?: string;
+        }>;
+        stopNode: (nodeId: string) => Promise<{ success: boolean; error?: string }>;
+        restartNode: (nodeId: string) => Promise<{ success: boolean; error?: string }>;
+        getNetworkInfo: () => Promise<{
+          success: boolean;
+          info?: {
+            blockHeight: number;
+            blockTime: number;
+            sessionLength: number;
+            validators: number;
+            totalNodes: number;
+          };
+          error?: string;
+        }>;
+        listNodes: () => Promise<{
+          success: boolean;
+          nodes: Array<{
+            nodeId: string;
+            endpoint: string;
+            privacyKey: string;
+            status: "deploying" | "active" | "stopped" | "error";
+            createdAt: number;
+          }>;
+        }>;
+        getConfig: () => Promise<{
+          success: boolean;
+          config?: {
+            network: string;
+            provider: string;
+            rpcEndpoint?: string;
+          };
+        }>;
+        saveConfig: (config: {
+          network?: "testnet" | "mainnet";
+          provider?: "cardano-partnerchain";
+          rpcEndpoint?: string;
+        }) => Promise<{ success: boolean }>;
+      };
     };
 
     chatAPI: {

@@ -10,6 +10,7 @@ import {
   INTERNAL_VAULT_URL,
   INTERNAL_SANDBOX_URL,
   INTERNAL_ONBOARDING_URL,
+  INTERNAL_MIDNIGHT_URL,
   INTERNAL_TOOL_PANEL_PREFIX,
   Tab,
 } from "../types/types";
@@ -21,6 +22,7 @@ import { ChatPage } from "./ChatPage";
 import { Web3Page } from "./Web3Page";
 import { VaultPage } from "./VaultPage";
 import { SandboxPage } from "./SandboxPage";
+import { MidnightPage } from "./MidnightPage";
 import { ToolPanelView } from "./ToolPanelView";
 import { OnboardingPage } from "./OnboardingPage";
 import { AlertTriangle, Loader2 } from "lucide-react";
@@ -473,6 +475,18 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
     return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
         <SandboxPage onNavigate={onNavigate} />
+      </div>
+    );
+  }
+
+  if (url === INTERNAL_MIDNIGHT_URL) {
+    useEffect(() => {
+      onUpdateTab({ title: "Midnight", isLoading: false, favicon: undefined });
+    }, [url]);
+
+    return (
+      <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
+        <MidnightPage />
       </div>
     );
   }

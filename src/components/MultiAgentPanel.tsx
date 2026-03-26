@@ -3,47 +3,60 @@
  * Agent selection, status, and orchestration controls
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   multiAgentService, 
   Agent, 
   OrchestrationMode,
   MultiAgentState
 } from '../services/MultiAgentService';
+import { AIAgentConfig } from '../types/ai';
 
 interface MultiAgentPanelProps {
+  // New props from Chatview
+  agents?: AIAgentConfig[];
+  selectedAgentIds?: string[];
+  orchestrationMode?: OrchestrationMode;
+  isActive?: boolean;
+  isRunning?: boolean;
+  currentAgentName?: string;
+  // Legacy props
   onRun?: (agentIds: string[], prompt: string, mode: OrchestrationMode) => void;
   initialSelected?: string[];
 }
 
 export const MultiAgentPanel: React.FC<MultiAgentPanelProps> = ({
+  agents: externalAgents,
+  selectedAgentIds = [],
+  orchestrationMode: externalMode = 'parallel',
+  isActive = false,
+  isRunning: externalRunning = false,
+  currentAgentName = '',
   onRun,
   initialSelected = []
 }) => {
-  const [agents, setAgents] = useState<Agent[]>(multiAgentService.getAgents());
-  const [selectedIds, setSelectedIds] = useState<string[]>(initialSelected);
-  const [mode, setMode] = useState<OrchestrationMode>('parallel');
+  const [internalAgents, setInternalAgents] = useState<Agent[]>(multiAgentService.getAgents());
+  const [selectedIds, setSelectedIds] = useState<string[]>(selectedAgentIds.length > 0 ? selectedAgentIds : initialSelected);
+  const [mode, setMode] = useState<OrchestrationMode>(externalMode);
   const [prompt, setPrompt] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
+  const [isRunning, setIsRunning] = useState(externalRunning);
 
-  React.useEffect(() => {
+  useEffect(() => {
     multiAgentService.addListener((state: MultiAgentState) => {
-      setAgents(multiAgentService.getAgents());
+      setInternalAgents(multiAgentService.getAgents());
       setIsRunning(state.isRunning);
     });
     return () => multiAgentService.removeListener(() => {});
   }, []);
 
-  const toggleAgent = (id: string) => {
-    const agent = agents.find(a => a.id === id);
-    if (!agent) return;
+  // Use external agents if provided, otherwise use internal agents
+  const displayAgents = externalAgents || internalAgents;
 
+  const toggleAgent = (id: string) => {
     if (selectedIds.includes(id)) {
       setSelectedIds(selectedIds.filter(i => i !== id));
-      multiAgentService.deselectAgent(id);
     } else {
       setSelectedIds([...selectedIds, id]);
-      multiAgentService.selectAgent(id);
     }
   };
 
@@ -52,9 +65,8 @@ export const MultiAgentPanel: React.FC<MultiAgentPanelProps> = ({
 
     setIsRunning(true);
     try {
-      // Execute with a placeholder - actual implementation would use Ollama
-      const executeFn = async (agentId: string, prompt: string): Promise<string> => {
-        return `Response from ${agentId}: Processed "${prompt}"`;
+      const executeFn = async (agentId: string, taskPrompt: string): Promise<string> => {
+        return `Response from ${agentId}: Processed "${taskPrompt}"`;
       };
 
       await multiAgentService.runOrchestration(selectedIds, prompt, mode, executeFn);
@@ -78,6 +90,41 @@ export const MultiAgentPanel: React.FC<MultiAgentPanelProps> = ({
     return `status-${status}`;
   };
 
+  // If external agents are provided, render compact status view
+  if (externalAgents) {
+    return (
+      <div className="multi-agent-panel compact">
+        <div className="agent-status-bar">
+          {isActive && (
+            <div className="agent-chips">
+              {displayAgents.map((agent: any) => {
+                const agentId = agent.id || agent.name;
+                const isSelected = selectedIds.includes(agentId);
+                return (
+                  <div
+                    key={agentId}
+                    className={`agent-chip ${isSelected ? 'selected' : ''}`}
+                    onClick={() => toggleAgent(agentId)}
+                  >
+                    <span className="agent-name">{agent.name}</span>
+                    {isSelected && <span className="check">✓</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {isRunning && currentAgentName && (
+            <div className="running-indicator">
+              <span className="spinner">⟳</span>
+              <span>Running: {currentAgentName}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Full panel view for standalone use
   return (
     <div className="multi-agent-panel">
       <div className="panel-header">
@@ -103,20 +150,24 @@ export const MultiAgentPanel: React.FC<MultiAgentPanelProps> = ({
       </div>
 
       <div className="agent-list">
-        {agents.map(agent => (
-          <div
-            key={agent.id}
-            className={`agent-chip ${selectedIds.includes(agent.id) ? 'selected' : ''}`}
-            onClick={() => toggleAgent(agent.id)}
-          >
-            <span className={`status-icon ${getStatusClass(agent.status)}`}>
-              {getStatusIcon(agent.status)}
-            </span>
-            <span className="agent-name">{agent.name}</span>
-            <span className="agent-role">{agent.role}</span>
-            {agent.model && <span className="agent-model">{agent.model}</span>}
-          </div>
-        ))}
+        {displayAgents.map((agent: any) => {
+          const agentId = agent.id || agent.name;
+          const agentStatus = (agent as Agent).status || 'idle';
+          const agentModel = (agent as Agent).model || agent.model;
+          return (
+            <div
+              key={agentId}
+              className={`agent-chip ${selectedIds.includes(agentId) ? 'selected' : ''}`}
+              onClick={() => toggleAgent(agentId)}
+            >
+              <span className={`status-icon ${getStatusClass(agentStatus as Agent['status'])}`}>
+                {getStatusIcon(agentStatus as Agent['status'])}
+              </span>
+              <span className="agent-name">{agent.name}</span>
+              {agentModel && <span className="agent-model">{agentModel}</span>}
+            </div>
+          );
+        })}
       </div>
 
       <div className="prompt-input">

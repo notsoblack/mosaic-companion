@@ -6,13 +6,16 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { Wallet, Check, X, RefreshCw, Copy, Shield, Bot, Cpu } from "lucide-react";
+import { Wallet, Check, X, RefreshCw, Copy, Shield, Bot, Cpu, QrCode, Link2 } from "lucide-react";
 import { cardanoWallet, CardanoWalletName, CardanoWalletState } from "../services/CardanoWalletService";
 
 interface Props {
   onConnect?: (state: CardanoWalletState) => void;
   compact?: boolean;
 }
+
+// Check if running in Electron
+const isElectron = typeof window !== 'undefined' && window.electronAPI !== undefined;
 
 const WALLETS = [
   { id: 'eternl', name: 'Eternl', icon: '🔷', color: '#1e3a5f' },
@@ -28,10 +31,18 @@ export const CardanoWalletConnect: React.FC<Props> = ({ onConnect, compact = fal
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [manualAddress, setManualAddress] = useState('');
+  const [showManualInput, setShowManualInput] = useState(false);
 
   // Check installed wallets on mount
   useEffect(() => {
-    setInstalledWallets(cardanoWallet.getInstalledWallets());
+    const wallets = cardanoWallet.getInstalledWallets();
+    setInstalledWallets(wallets);
+    
+    // In Electron, show manual input by default since extensions aren't available
+    if (isElectron && wallets.length === 0) {
+      setShowManualInput(true);
+    }
   }, []);
 
   // Subscribe to state changes
@@ -64,6 +75,49 @@ export const CardanoWalletConnect: React.FC<Props> = ({ onConnect, compact = fal
     setLoading(true);
     await cardanoWallet.refresh();
     setLoading(false);
+  };
+
+  const handleManualConnect = async () => {
+    if (!manualAddress.trim()) {
+      setError('Please enter a Cardano address');
+      return;
+    }
+    
+    // Validate Cardano address format
+    const cardanoRegex = /^(addr1|stake1|addr_test1|stake_test1)[a-zA-Z0-9]+$/;
+    if (!cardanoRegex.test(manualAddress.trim())) {
+      setError('Invalid Cardano address format. Address should start with addr1 or stake1');
+      return;
+    }
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Create a view-only state
+      const viewOnlyState: CardanoWalletState = {
+        isConnected: true,
+        walletName: 'eternl' as CardanoWalletName, // Default to eternl for view-only
+        address: manualAddress.trim(),
+        rewardAddress: null,
+        balance: '0',
+        hyperSharePassCount: 0,
+        access: {
+          canChat: false,
+          canCreateAgents: 0,
+          canDelegate: false,
+          canRentCompute: false
+        }
+      };
+      
+      setState(viewOnlyState);
+      onConnect?.(viewOnlyState);
+      setShowManualInput(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Connection failed');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const copyAddress = () => {
@@ -328,39 +382,95 @@ export const CardanoWalletConnect: React.FC<Props> = ({ onConnect, compact = fal
         </div>
       )}
 
-      <div className="wallet-grid">
-        {WALLETS.map(wallet => {
-          const isInstalled = installedWallets.includes(wallet.id as CardanoWalletName);
-          return (
-            <button
-              key={wallet.id}
-              className={`wallet-btn ${isInstalled ? 'installed' : 'missing'}`}
-              onClick={() => isInstalled && handleConnect(wallet.id as CardanoWalletName)}
-              disabled={!isInstalled || loading}
-            >
-              <span className="wallet-icon" style={{ background: wallet.color }}>
-                {wallet.icon}
-              </span>
-              <span className="wallet-name">{wallet.name}</span>
-              {!isInstalled && <span className="hint">Not installed</span>}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="info-box">
-        <h4>🎫 HyperSharePass Collection</h4>
-        <p>Hold HyperSharePass NFTs to unlock:</p>
-        <ul>
-          <li>🤖 Create AI agents</li>
-          <li>💬 Chat with AI</li>
-          <li>🔗 Delegate node factories</li>
-          <li>💻 Rent compute (10+ NFTs)</li>
-        </ul>
-        <div className="policy-id">
-          Policy ID: <code>a222abf06e562a5acc7d5bb3bec3d0b29414082e6fe5650026f92d46</code>
+      {/* Electron Mode Notice */}
+      {isElectron && installedWallets.length === 0 && !showManualInput && (
+        <div className="electron-notice">
+          <div className="notice-icon">⚠️</div>
+          <div className="notice-content">
+            <strong>Running in Electron Mode</strong>
+            <p>Browser wallet extensions (Eternl, Lace, etc.) are not available in desktop apps.</p>
+            <div className="notice-options">
+              <button onClick={() => setShowManualInput(true)} className="option-btn">
+                <Link2 size={14} /> Enter Address Manually
+              </button>
+              <button onClick={() => window.open('http://localhost:5173', '_blank')} className="option-btn secondary">
+                Open in Browser
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Manual Address Input */}
+      {showManualInput && (
+        <div className="manual-input-section">
+          <h4>📝 Enter Cardano Address</h4>
+          <p className="hint">View-only mode - you'll need to connect via browser for full access</p>
+          
+          <div className="input-group">
+            <input
+              type="text"
+              value={manualAddress}
+              onChange={(e) => setManualAddress(e.target.value)}
+              placeholder="addr1..."
+              className="address-input"
+            />
+            <button 
+              onClick={handleManualConnect}
+              disabled={loading || !manualAddress.trim()}
+              className="connect-btn"
+            >
+              {loading ? 'Connecting...' : 'Connect'}
+            </button>
+          </div>
+          
+          <div className="input-hint">
+            <span>Address format: addr1... or stake1...</span>
+          </div>
+          
+          <button onClick={() => setShowManualInput(false)} className="back-btn">
+            ← Back to wallet selection
+          </button>
+        </div>
+      )}
+
+      {!showManualInput && (
+        <>
+          <div className="wallet-grid">
+            {WALLETS.map(wallet => {
+              const isInstalled = installedWallets.includes(wallet.id as CardanoWalletName);
+              return (
+                <button
+                  key={wallet.id}
+                  className={`wallet-btn ${isInstalled ? 'installed' : 'missing'}`}
+                  onClick={() => isInstalled && handleConnect(wallet.id as CardanoWalletName)}
+                  disabled={!isInstalled || loading}
+                >
+                  <span className="wallet-icon" style={{ background: wallet.color }}>
+                    {wallet.icon}
+                  </span>
+                  <span className="wallet-name">{wallet.name}</span>
+                  {!isInstalled && <span className="hint">Not installed</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="info-box">
+            <h4>🎫 HyperSharePass Collection</h4>
+            <p>Hold HyperSharePass NFTs to unlock:</p>
+            <ul>
+              <li>🤖 Create AI agents</li>
+              <li>💬 Chat with AI</li>
+              <li>🔗 Delegate node factories</li>
+              <li>💻 Rent compute (10+ NFTs)</li>
+            </ul>
+            <div className="policy-id">
+              Policy ID: <code>a222abf06e562a5acc7d5bb3bec3d0b29414082e6fe5650026f92d46</code>
+            </div>
+          </div>
+        </>
+      )}
 
       <style>{`
         .cardano-wallet-connect {
@@ -448,6 +558,74 @@ export const CardanoWalletConnect: React.FC<Props> = ({ onConnect, compact = fal
           font-family: monospace;
           color: #7c3aed;
         }
+        
+        .electron-notice {
+          background: #3d2e00;
+          border: 1px solid #ffc107;
+          border-radius: 8px;
+          padding: 16px;
+          margin-bottom: 16px;
+          display: flex;
+          gap: 12px;
+        }
+        .electron-notice .notice-icon { font-size: 24px; }
+        .electron-notice .notice-content { flex: 1; }
+        .electron-notice strong { color: #ffc107; }
+        .electron-notice p { color: #aaa; margin: 8px 0; font-size: 13px; }
+        .electron-notice .notice-options { display: flex; gap: 8px; margin-top: 12px; }
+        .electron-notice .option-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 8px 16px;
+          background: #333;
+          border: 1px solid #555;
+          border-radius: 6px;
+          color: #fff;
+          cursor: pointer;
+          font-size: 13px;
+        }
+        .electron-notice .option-btn:hover { background: #444; }
+        .electron-notice .option-btn.secondary { background: transparent; border-color: #7c3aed; color: #7c3aed; }
+        
+        .manual-input-section {
+          background: #16213e;
+          border-radius: 12px;
+          padding: 20px;
+          margin-bottom: 16px;
+        }
+        .manual-input-section h4 { margin: 0 0 8px 0; color: #fff; }
+        .manual-input-section .hint { color: #888; font-size: 13px; margin: 0 0 16px 0; }
+        .manual-input-section .input-group { display: flex; gap: 8px; }
+        .manual-input-section .address-input {
+          flex: 1;
+          background: #0d0d1a;
+          border: 1px solid #333;
+          border-radius: 6px;
+          padding: 12px;
+          color: #fff;
+          font-family: monospace;
+        }
+        .manual-input-section .connect-btn {
+          background: #7c3aed;
+          border: none;
+          border-radius: 6px;
+          padding: 12px 24px;
+          color: #fff;
+          cursor: pointer;
+          font-weight: 600;
+        }
+        .manual-input-section .connect-btn:disabled { opacity: 0.5; }
+        .manual-input-section .input-hint { margin-top: 8px; font-size: 11px; color: #666; }
+        .manual-input-section .back-btn {
+          margin-top: 16px;
+          background: none;
+          border: none;
+          color: #888;
+          cursor: pointer;
+          font-size: 13px;
+        }
+        .manual-input-section .back-btn:hover { color: #fff; }
         
         .cardano-connect-compact select {
           background: #1e1e2e;

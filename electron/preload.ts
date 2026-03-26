@@ -92,7 +92,34 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.invoke("ai-agents-history:delete-all", agentId),
   },
   mcpAPI,
-  gmailAPI,  
+  gmailAPI,
+  // Midnight Network API
+  midnight: {
+    init: () => ipcRenderer.invoke("midnight:init"),
+    createNode: (config: {
+      type: "validator" | "full" | "light";
+      stake: number;
+      privacy: "public" | "shielded" | "private";
+      delegation: "user" | "agent" | "hybrid";
+      agentId?: string;
+    }) => ipcRenderer.invoke("midnight:create-node", config),
+    delegate: (nodeId: string, agentId: string) =>
+      ipcRenderer.invoke("midnight:delegate", nodeId, agentId),
+    getStatus: (nodeId: string) =>
+      ipcRenderer.invoke("midnight:get-status", nodeId),
+    stopNode: (nodeId: string) =>
+      ipcRenderer.invoke("midnight:stop-node", nodeId),
+    restartNode: (nodeId: string) =>
+      ipcRenderer.invoke("midnight:restart-node", nodeId),
+    getNetworkInfo: () => ipcRenderer.invoke("midnight:get-network-info"),
+    listNodes: () => ipcRenderer.invoke("midnight:list-nodes"),
+    getConfig: () => ipcRenderer.invoke("midnight:get-config"),
+    saveConfig: (config: {
+      network?: "testnet" | "mainnet";
+      provider?: "cardano-partnerchain";
+      rpcEndpoint?: string;
+    }) => ipcRenderer.invoke("midnight:save-config", config),
+  },
   // Linux AppImage sandbox state (read-only)
   sandbox: {
     getState: () => ipcRenderer.invoke("sandbox:get-state"),

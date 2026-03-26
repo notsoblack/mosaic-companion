@@ -92,7 +92,9 @@ class CardanoWalletService {
       
       // Get address
       const addresses = await (this.api as { getUsedAddresses: () => Promise<string[]> }).getUsedAddresses();
-      const address = addresses[0] || await (this.api as { getChangeAddress: () => Promise<string[]> }).getChangeAddress();
+      const address = Array.isArray(addresses) && addresses.length > 0 
+        ? addresses[0] 
+        : await (this.api as { getChangeAddress: () => Promise<string> }).getChangeAddress();
       
       // Get balance
       const balance = await (this.api as { getBalance: () => Promise<string> }).getBalance();
@@ -165,10 +167,8 @@ class CardanoWalletService {
       throw new Error('Wallet not connected');
     }
 
-    const signature = await (this.api as { signData: (address: string, payload: string) => Promise<string> })(
-      this.state.address,
-      message
-    );
+    const api = this.api as { signData: (address: string, payload: string) => Promise<string> };
+    const signature = await api.signData(this.state.address, message);
     
     return signature;
   }
@@ -181,10 +181,8 @@ class CardanoWalletService {
       throw new Error('Wallet not connected');
     }
 
-    const signature = await (this.api as { signTx: (tx: string, partialSign: boolean) => Promise<string> })(
-      tx,
-      partialSign
-    );
+    const api = this.api as { signTx: (tx: string, partialSign: boolean) => Promise<string> };
+    const signature = await api.signTx(tx, partialSign);
     
     return signature;
   }
@@ -197,7 +195,8 @@ class CardanoWalletService {
       throw new Error('Wallet not connected');
     }
 
-    const txHash = await (this.api as { submitTx: (tx: string) => Promise<string> })(tx);
+    const api = this.api as { submitTx: (tx: string) => Promise<string> };
+    const txHash = await api.submitTx(tx);
     return txHash;
   }
 

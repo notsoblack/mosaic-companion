@@ -30,6 +30,7 @@ export interface Tab {
 export const INTERNAL_HOME_URL = 'browser://home';
 export const INTERNAL_SETTINGS_URL = 'browser://settings';
 export const INTERNAL_CHAT_URL = 'browser://internal_chat';
+export const INTERNAL_MIDNIGHT_URL = 'browser://midnight';
 export interface AppSettings {
     homeUrl: string;
     customGreeting: string;

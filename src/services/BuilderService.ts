@@ -38,6 +38,24 @@ interface ExtendedElectronAPI {
       error?: string;
     }>;
   };
+  midnight?: {
+    initialize: () => Promise<{ success: boolean; error?: string }>;
+    createNode: (config: { type: string; stake: number; privacy: string }) => Promise<{
+      success: boolean;
+      nodeId?: string;
+      error?: string;
+    }>;
+    delegateNode: (nodeId: string, agentId: string) => Promise<{
+      success: boolean;
+      delegationId?: string;
+      error?: string;
+    }>;
+    getNodeStatus: (nodeId: string) => Promise<{
+      success: boolean;
+      status?: any;
+      error?: string;
+    }>;
+  };
 }
 
 // Type assertion helper
@@ -404,6 +422,140 @@ class BuilderServiceImpl {
   async fileExists(path: string): Promise<boolean> {
     const result = await this.executeShell(`test -f "${this.expandPath(path)}" && echo "exists" || echo "not found"`);
     return result.output?.trim() === 'exists';
+  }
+
+  // ==================== MIDNIGHT NETWORK INTEGRATION ====================
+
+  // Initialize Midnight connection
+  async midnightInitialize(): Promise<BuilderActionResult> {
+    if (!this.config.enabled) {
+      return { success: false, error: 'Builder mode is disabled' };
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const api = getExtendedAPI();
+      if (!api?.midnight) {
+        return { success: false, error: 'Midnight integration not available. Ensure Electron mode is enabled.' };
+      }
+
+      const result = await api.midnight.initialize();
+      
+      return {
+        success: result.success,
+        output: 'Connected to Midnight Network',
+        error: result.error,
+        duration: Date.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: (error as Error).message,
+        duration: Date.now() - startTime,
+      };
+    }
+  }
+
+  // Create a new node on Midnight Network
+  async midnightCreateNode(config: {
+    type: 'validator' | 'full' | 'light';
+    stake: number;
+    privacy: 'public' | 'shielded' | 'private';
+    agentId?: string;
+  }): Promise<BuilderActionResult> {
+    if (!this.config.enabled) {
+      return { success: false, error: 'Builder mode is disabled' };
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const api = getExtendedAPI();
+      if (!api?.midnight) {
+        return { success: false, error: 'Midnight integration not available' };
+      }
+
+      const result = await api.midnight.createNode(config);
+      
+      return {
+        success: result.success,
+        output: result.nodeId ? `Node created: ${result.nodeId}` : undefined,
+        data: result as any,
+        error: result.error,
+        duration: Date.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: (error as Error).message,
+        duration: Date.now() - startTime,
+      };
+    }
+  }
+
+  // Delegate node to an agent
+  async midnightDelegateNode(nodeId: string, agentId: string): Promise<BuilderActionResult> {
+    if (!this.config.enabled) {
+      return { success: false, error: 'Builder mode is disabled' };
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const api = getExtendedAPI();
+      if (!api?.midnight) {
+        return { success: false, error: 'Midnight integration not available' };
+      }
+
+      const result = await api.midnight.delegateNode(nodeId, agentId);
+      
+      return {
+        success: result.success,
+        output: result.delegationId ? `Delegation created: ${result.delegationId}` : undefined,
+        data: result as any,
+        error: result.error,
+        duration: Date.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: (error as Error).message,
+        duration: Date.now() - startTime,
+      };
+    }
+  }
+
+  // Get node status
+  async midnightGetNodeStatus(nodeId: string): Promise<BuilderActionResult> {
+    if (!this.config.enabled) {
+      return { success: false, error: 'Builder mode is disabled' };
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const api = getExtendedAPI();
+      if (!api?.midnight) {
+        return { success: false, error: 'Midnight integration not available' };
+      }
+
+      const result = await api.midnight.getNodeStatus(nodeId);
+      
+      return {
+        success: result.success,
+        output: JSON.stringify(result.status, null, 2),
+        data: result.status,
+        error: result.error,
+        duration: Date.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: (error as Error).message,
+        duration: Date.now() - startTime,
+      };
+    }
   }
 
   // Get current working directory

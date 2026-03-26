@@ -60,13 +60,41 @@ export const DEFAULT_MODELS: Record<AIProvider, string[]> = {
     "o1-mini",
   ],
   gemini: ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-  ollama: ["llama3.2", "mistral", "codellama", "deepseek-coder"],
+  ollama: [
+    // Local models
+    "llama3.2",
+    "llama3.2:70b",
+    "llama3.1",
+    "llama3",
+    "llama2",
+    "mistral",
+    "mistral:latest",
+    "codellama",
+    "codellama:70b",
+    "deepseek-coder",
+    "deepseek-coder:33b",
+    "phi3",
+    "phi3.5",
+    "qwen2",
+    "qwen2.5",
+    "aya",
+    "solar",
+    "wizardlm2",
+    "wizardlm2:7b",
+    "orca-mini",
+    "neural-chat",
+    // Cloud models (require OLLAMA_API_KEY)
+    "minimax-m2.5:cloud",
+    "minimax-m2.1:cloud",
+    "openai/gpt-4",
+    "openai/gpt-3.5-turbo",
+  ],
   custom: [],
 };
 
 export const PROVIDER_INFO: Record<
   AIProvider,
-  { name: string; color: string; baseUrl: string }
+  { name: string; color: string; baseUrl: string; description?: string }
 > = {
   claude: {
     name: "Anthropic Claude",
@@ -84,9 +112,10 @@ export const PROVIDER_INFO: Record<
     baseUrl: "https://generativelanguage.googleapis.com",
   },
   ollama: {
-    name: "Ollama (Local)",
+    name: "Ollama (Local + Cloud)",
     color: "#8B5CF6",
     baseUrl: "http://localhost:11434",
+    description: "Local models + MiniMax cloud (requires OLLAMA_API_KEY)",
   },
   custom: {
     name: "Custom Endpoint",

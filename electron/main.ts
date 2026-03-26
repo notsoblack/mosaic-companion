@@ -34,6 +34,7 @@ import { mcpClient } from "./integrations/mcp/index";
 import { createRequire } from 'module';
 import { authenticate, isAuthenticated, signOut } from "./integrations/gmail";
 import { getUserProfile, getRecentEmails, getEmailDetails, searchEmails, markAsRead, markAsUnread } from "./integrations/gmail/gmailClient";
+import { registerMidnightHandlers } from "./integrations/midnight/index";
 
 // =============================================================================
 // ESM Path Setup
@@ -625,6 +626,9 @@ ipcMain.handle("gmail:set-auto-mark-read", (_event, enabled) => {
   const result = setGmailAutoMarkRead(enabled);
   return { ...result, enabled: getGmailAutoMarkRead() };
 });
+
+// Midnight Network Integration
+registerMidnightHandlers();
 
 // Theme Handlers
 ipcMain.handle("themes:get", async () => {

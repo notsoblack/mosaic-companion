@@ -78,9 +78,24 @@ export interface CardanoMetadata {
   json: Record<string, unknown>;
 }
 
-// Extension for window object
+// Extension for window object - merged declaration
+// Note: window.cardano is also declared in other files, this extends the type
+export interface WindowCardano {
+  cardano?: Record<string, {
+    enable(): Promise<CardanoWalletAPI>;
+    isEnabled(): Promise<boolean>;
+  }>;
+}
+
+// Augment existing Window interface
 declare global {
+  // Only add if not already present
   interface Window {
-    cardano?: Record<string, CardanoWallet>;
+    cardano?: Record<string, {
+      enable(): Promise<CardanoWalletAPI>;
+      isEnabled(): Promise<boolean>;
+    }>;
   }
 }
+
+export {};

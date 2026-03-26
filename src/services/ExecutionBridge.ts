@@ -144,6 +144,18 @@ export class ExecutionBridge {
         case 'delete':
           return await this.deletePath(command);
         
+        case 'midnight-init':
+          return await this.midnightInitialize(command);
+        
+        case 'midnight-create-node':
+          return await this.midnightCreateNode(command);
+        
+        case 'midnight-delegate':
+          return await this.midnightDelegateNode(command);
+        
+        case 'midnight-status':
+          return await this.midnightGetNodeStatus(command);
+        
         default:
           return { success: false, action, error: `Unknown action: ${action}` };
       }
@@ -291,6 +303,70 @@ export class ExecutionBridge {
     return {
       success: result.success,
       action: 'delete',
+      result: result.output,
+      error: result.error,
+    };
+  }
+
+  // ==================== MIDNIGHT NETWORK COMMANDS ====================
+
+  private static async midnightInitialize(command: any): Promise<ExecutionResult> {
+    const result = await builderService.midnightInitialize();
+    return {
+      success: result.success,
+      action: 'midnight-init',
+      result: result.output,
+      error: result.error,
+    };
+  }
+
+  private static async midnightCreateNode(command: any): Promise<ExecutionResult> {
+    const { type, stake, privacy, agentId } = command;
+    const result = await builderService.midnightCreateNode({
+      type: type || 'validator',
+      stake: stake || 1000,
+      privacy: privacy || 'shielded',
+      agentId
+    });
+    return {
+      success: result.success,
+      action: 'midnight-create-node',
+      result: result.output,
+      error: result.error,
+    };
+  }
+
+  private static async midnightDelegateNode(command: any): Promise<ExecutionResult> {
+    const { nodeId, agentId } = command;
+    if (!nodeId || !agentId) {
+      return {
+        success: false,
+        action: 'midnight-delegate',
+        error: 'Missing required fields: nodeId, agentId'
+      };
+    }
+    const result = await builderService.midnightDelegateNode(nodeId, agentId);
+    return {
+      success: result.success,
+      action: 'midnight-delegate',
+      result: result.output,
+      error: result.error,
+    };
+  }
+
+  private static async midnightGetNodeStatus(command: any): Promise<ExecutionResult> {
+    const { nodeId } = command;
+    if (!nodeId) {
+      return {
+        success: false,
+        action: 'midnight-status',
+        error: 'Missing required field: nodeId'
+      };
+    }
+    const result = await builderService.midnightGetNodeStatus(nodeId);
+    return {
+      success: result.success,
+      action: 'midnight-status',
       result: result.output,
       error: result.error,
     };

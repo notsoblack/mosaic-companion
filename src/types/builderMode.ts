@@ -135,4 +135,5 @@ export interface BuilderActionResult {
   output?: string;
   error?: string;
   duration?: number;
+  data?: any; // For structured responses (e.g., Midnight node data)
 }

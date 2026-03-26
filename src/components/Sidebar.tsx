@@ -30,6 +30,7 @@ import {
   Box,
   Shield,
   Hash,
+  Moon,
 } from "lucide-react";
 import {
   SidebarItem,
@@ -42,6 +43,7 @@ import {
   INTERNAL_WEB3_URL,
   INTERNAL_VAULT_URL,
   INTERNAL_SANDBOX_URL,
+  INTERNAL_MIDNIGHT_URL,
   INTERNAL_TOOL_PANEL_PREFIX,
 } from "../types/types";
 import { AIAgentConfig, PROVIDER_INFO } from "../types/ai";
@@ -225,6 +227,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       url: INTERNAL_MULTI_CHAT_URL,
     },
     { id: "web3", label: "Web3", icon: "Eth", url: INTERNAL_WEB3_URL },
+    { id: "midnight", label: "Midnight", icon: "Moon", url: INTERNAL_MIDNIGHT_URL },
     { id: "vault", label: "Vault", icon: "Lock", url: INTERNAL_VAULT_URL },
     { id: "sandbox", label: "Tool Sandbox", icon: "Cpu", url: INTERNAL_SANDBOX_URL },
     {
