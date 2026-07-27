@@ -605,8 +605,8 @@ export class ElectronHermesAdapter implements HermesAdapter {
   }
 
   async chat(baseUrl: string, message: string, systemPrompt?: string): Promise<{ response: string; cost: number }> {
-    // Fix: ensure api.ollama.com is used
-    const fixedBaseUrl = baseUrl.replace('https://ollama.com', 'https://api.ollama.com');
+    // Use ollama.com directly — api.ollama.com causes Cloudflare 301 redirect that converts POST→GET
+    const fixedBaseUrl = baseUrl.includes('ollama.com') ? 'https://ollama.com' : baseUrl;
     const resp = await fetch(`${fixedBaseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

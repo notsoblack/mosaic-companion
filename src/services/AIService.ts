@@ -76,11 +76,11 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    // Fix: migrate old ollama.com URLs to api.ollama.com for ollama-cloud provider
+    // Fix: migrate old ollama.com URLs to ollama.com (direct endpoint) for ollama-cloud provider
     let baseUrl = config.baseUrl || "https://api.openai.com";
-    if (config.provider === "ollama-cloud" && baseUrl.includes("ollama.com") && !baseUrl.includes("api.ollama.com")) {
-      console.log('[AIService.sendToOpenAI] Migrating old baseUrl:', baseUrl, '→ https://api.ollama.com');
-      baseUrl = "https://api.ollama.com";
+    if (config.provider === "ollama-cloud" && baseUrl.includes("ollama.com")) {
+      console.log('[AIService.sendToOpenAI] Ensuring ollama-cloud uses direct endpoint:', baseUrl, '→ https://ollama.com');
+      baseUrl = "https://ollama.com";
     }
 
     // For Hermes API Server, default the key if empty
@@ -89,11 +89,11 @@ export class AIService {
         ? "mosaic-hermes-2025"
         : config.apiKey?.trim() || config.apiKey;
 
-    // AGGRESSIVE FIX: Final safety check - rewrite ollama.com URLs at request time
+    // Safety check: ensure ollama.com URLs use direct endpoint (api.ollama.com 301-redirects POST→GET)
     let finalBaseUrl = baseUrl;
-    if (finalBaseUrl.includes("ollama.com") && !finalBaseUrl.includes("api.ollama.com")) {
-      console.warn(`[AIService.sendToOpenAI] FINAL SAFETY: Rewriting ${finalBaseUrl} → https://api.ollama.com`);
-      finalBaseUrl = "https://api.ollama.com";
+    if (finalBaseUrl.includes("ollama.com")) {
+      console.warn(`[AIService.sendToOpenAI] Redirecting ollama URL to direct endpoint: ${finalBaseUrl} → https://ollama.com`);
+      finalBaseUrl = "https://ollama.com";
     }
 
     const response = await fetch(
@@ -498,11 +498,11 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    // AGGRESSIVE FIX: Any agent with ollama.com URLs gets migrated immediately
-    // This catches agents saved with wrong baseUrl regardless of provider
-    if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
-      console.log(`[AIService] Force-migrating ${config.name} baseUrl: ${config.baseUrl} → https://api.ollama.com`);
-      config = { ...config, baseUrl: "https://api.ollama.com" };
+    // Safety fix: Any agent with ollama.com URLs gets directed to direct endpoint
+    // api.ollama.com causes Cloudflare 301 redirects that convert POST→GET, breaking API calls
+    if (config.baseUrl?.includes("ollama.com")) {
+      console.log(`[AIService] Directing ${config.name} to ollama.com direct endpoint (avoiding api.ollama.com redirect)`);
+      config = { ...config, baseUrl: "https://ollama.com" };
     }
 
     // ─── Skill Injection (v2.6) ─────────────────────────────────────────────
@@ -564,10 +564,10 @@ export class AIService {
         return this.sendToClaude(config, enrichedMessages, callbacks);
       case "openai":
       case "custom":
-        // AGGRESSIVE: Also check for ollama.com URLs in openai/custom providers
-        if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
-          console.log(`[AIService] Re-routing ${config.provider} agent with ollama.com URL to ollama-cloud handler`);
-          const fixedBaseUrl = "https://api.ollama.com";
+        // Safety: Also check for ollama.com URLs in openai/custom providers — route to direct endpoint
+        if (config.baseUrl?.includes("ollama.com")) {
+          console.log(`[AIService] Re-routing ${config.provider} agent with ollama.com URL to direct endpoint`);
+          const fixedBaseUrl = "https://ollama.com";
           return this.sendToOpenAI(
             { ...config, baseUrl: fixedBaseUrl, provider: "ollama-cloud" },
             enrichedMessages,
@@ -580,11 +580,11 @@ export class AIService {
       case "ollama":
         return this.sendToOllama(config, enrichedMessages, callbacks);
       case "ollama-cloud":
-        // Ollama Cloud uses OpenAI-compatible endpoint at api.ollama.com
-        // Fix: migrate any saved agents that have the old/incorrect baseUrl
-        const ollamaCloudBaseUrl = config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")
-          ? "https://api.ollama.com"
-          : (config.baseUrl || "https://api.ollama.com");
+        // Ollama Cloud uses OpenAI-compatible endpoint at ollama.com directly
+        // api.ollama.com causes 301 redirects that break POST requests
+        const ollamaCloudBaseUrl = config.baseUrl?.includes("ollama.com")
+          ? "https://ollama.com"
+          : (config.baseUrl || "https://ollama.com");
         return this.sendToOpenAI(
           { ...config, baseUrl: ollamaCloudBaseUrl },
           enrichedMessages,
@@ -598,10 +598,10 @@ export class AIService {
         return this.sendToHermesAIM(config, enrichedMessages, callbacks);
       case "hermes-api":
         // Hermes API Server — OpenAI-compatible with full tool loop
-        // AGGRESSIVE: Check for ollama.com URLs
-        if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
-          console.log(`[AIService] Re-routing hermes-api agent with ollama.com URL to ollama-cloud handler`);
-          const fixedBaseUrl = "https://api.ollama.com";
+        // Safety: Check for ollama.com URLs and route to direct endpoint
+        if (config.baseUrl?.includes("ollama.com")) {
+          console.log(`[AIService] Re-routing hermes-api agent with ollama.com URL to direct endpoint`);
+          const fixedBaseUrl = "https://ollama.com";
           return this.sendToOpenAI(
             { ...config, baseUrl: fixedBaseUrl, provider: "ollama-cloud" },
             enrichedMessages,

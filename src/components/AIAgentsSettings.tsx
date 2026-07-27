@@ -252,11 +252,11 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
 
     if (provider === "ollama-cloud") {
       // For cloud, try fetching from the cloud API if a key is set, otherwise use defaults
-      // Fix: use api.ollama.com (not ollama.com) - cloud API endpoint
-      let baseUrl = agent.baseUrl || PROVIDER_INFO[provider]?.baseUrl || "https://api.ollama.com";
-      // Migrate any old/incorrect URLs
-      if (baseUrl.includes("ollama.com") && !baseUrl.includes("api.ollama.com")) {
-        baseUrl = "https://api.ollama.com";
+      // Use ollama.com directly — api.ollama.com causes Cloudflare 301 redirect that converts POST→GET
+      let baseUrl = agent.baseUrl || PROVIDER_INFO[provider]?.baseUrl || "https://ollama.com";
+      // Ensure all ollama URLs point to direct endpoint
+      if (baseUrl.includes("ollama.com")) {
+        baseUrl = "https://ollama.com";
       }
       baseUrl = baseUrl.replace(/\/$/, "");
       const apiKey = agent.apiKey?.trim();

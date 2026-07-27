@@ -873,7 +873,7 @@ function readAgents(): AIAgent[] {
     if (a.provider === "ollama" && model && model.includes(":cloud")) {
       console.log(`[Main] Migrating Ollama agent "${a.name}" model ${a.model} → ollama-cloud provider`);
       a.provider = "ollama-cloud" as AIAgent["provider"];
-      a.baseUrl = a.baseUrl || "https://api.ollama.com";
+      a.baseUrl = a.baseUrl || "https://ollama.com";
       a.model = (a.model as string).replace(/:cloud$/, ""); // strip :cloud suffix
       sanitized = true;
     }
