@@ -2,12 +2,6 @@
 
 import { AIAgentConfig, ChatMessage, AIProvider } from "../types/ai";
 import {
-  buildAgentSystemPrompt,
-  assembleSystemPrompt,
-  getRecommendedCapabilities,
-  ensureSoulGrade,
-} from "./VaultCapabilityService";
-import {
   chatMessagesToHypercycleAimMessages,
   consumeHypercycleStream,
   extractTokenFromAimResponse,
@@ -82,22 +76,12 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    // DEBUG: Trace what's happening with the baseUrl
-    console.log('[AIService.sendToOpenAI] DEBUG - Input config:', {
-      provider: config.provider,
-      baseUrl: config.baseUrl,
-      name: config.name
-    });
-    
     // Fix: migrate old ollama.com URLs to api.ollama.com for ollama-cloud provider
     let baseUrl = config.baseUrl || "https://api.openai.com";
-    console.log('[AIService.sendToOpenAI] DEBUG - baseUrl after default:', baseUrl);
-    
     if (config.provider === "ollama-cloud" && baseUrl.includes("ollama.com") && !baseUrl.includes("api.ollama.com")) {
       console.log('[AIService.sendToOpenAI] Migrating old baseUrl:', baseUrl, '→ https://api.ollama.com');
       baseUrl = "https://api.ollama.com";
     }
-    console.log('[AIService.sendToOpenAI] DEBUG - baseUrl after first migration:', baseUrl);
 
     // For Hermes API Server, default the key if empty
     const actualApiKey =
@@ -107,92 +91,31 @@ export class AIService {
 
     // AGGRESSIVE FIX: Final safety check - rewrite ollama.com URLs at request time
     let finalBaseUrl = baseUrl;
-    console.log('[AIService.sendToOpenAI] DEBUG - finalBaseUrl before safety check:', finalBaseUrl);
-    console.log('[AIService.sendToOpenAI] DEBUG - Checking conditions:', {
-      includesOllama: finalBaseUrl.includes("ollama.com"),
-      includesApiOllama: finalBaseUrl.includes("api.ollama.com"),
-      shouldMigrate: finalBaseUrl.includes("ollama.com") && !finalBaseUrl.includes("api.ollama.com")
-    });
-    
     if (finalBaseUrl.includes("ollama.com") && !finalBaseUrl.includes("api.ollama.com")) {
       console.warn(`[AIService.sendToOpenAI] FINAL SAFETY: Rewriting ${finalBaseUrl} → https://api.ollama.com`);
       finalBaseUrl = "https://api.ollama.com";
     }
-    console.log('[AIService.sendToOpenAI] DEBUG - finalBaseUrl after safety check:', finalBaseUrl);
-    
-    // Build URL and apply aggressive fix for ollama.com → api.ollama.com
-    // NOTE: api.ollama.com redirects to ollama.com, so we use ollama.com directly
-    // to avoid 301 redirect that converts POST to GET
-    let url;
-    if (config.provider === 'ollama-cloud') {
-      // Ollama Cloud REQUIRES a Bearer API key; without it Cloudflare returns 405.
-      if (!actualApiKey) {
-        throw new Error(
-          `Ollama Cloud API key is missing for agent "${config.name}". Please add an API key at ollama.com/settings/api-keys and paste it into the agent settings.`
-        );
+
+    const response = await fetch(
+      `${finalBaseUrl}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${actualApiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: config.maxTokens || 4096,
+          temperature: config.temperature || 0.7,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          stream: !!callbacks,
+        }),
       }
-      // CRITICAL FIX: Use ollama.com directly, NOT api.ollama.com (which 301 redirects)
-      url = 'https://ollama.com/v1/chat/completions';
-      console.log('[AIService.sendToOpenAI] Using ollama.com directly for cloud provider (avoids 301):', url);
-    } else {
-      url = `${finalBaseUrl}/v1/chat/completions`;
-    }
-
-    console.log('[AIService.sendToOpenAI] DEBUG - Final URL:', url);
-    console.log('[AIService.sendToOpenAI] DEBUG - Request method:', "POST");
-    console.log('[AIService.sendToOpenAI] ABOUT TO FETCH:', url);
-
-    // BYPASS: Use XMLHttpRequest instead of fetch to avoid any interception
-    const response = await new Promise<{ok: boolean; status: number; url: string; json: () => Promise<any>; text: () => Promise<string>; body: ReadableStream | null}>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', url, true);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.setRequestHeader('Authorization', `Bearer ${actualApiKey}`);
-      
-      xhr.onload = () => {
-        console.log('[AIService.XHR] Response URL:', xhr.responseURL);
-        console.log('[AIService.XHR] Status:', xhr.status);
-        console.log('[AIService.XHR] Status Text:', xhr.statusText);
-        console.log('[AIService.XHR] Response Text (first 500 chars):', xhr.responseText?.substring(0, 500));
-        
-        resolve({
-          ok: xhr.status >= 200 && xhr.status < 300,
-          status: xhr.status,
-          url: xhr.responseURL || url,
-          json: () => Promise.resolve(JSON.parse(xhr.responseText)),
-          text: () => Promise.resolve(xhr.responseText),
-          body: null,
-        });
-      };
-      
-      xhr.onerror = () => reject(new Error('XHR request failed'));
-      
-      const CONTEXT_BUDGET = 150000; // ~ chars budget for all messages combined (well under 196608 token model max)
-      let runningChars = 0;
-      const truncatedMessages = messages.map((m) => {
-        const safeContent = typeof m.content === "string" ? m.content : String(m.content ?? "");
-        runningChars += safeContent.length;
-        // Cap the most recent messages; older messages are dropped by the caller if needed
-        const maxMsgChars = 100000;
-        if (safeContent.length > maxMsgChars) {
-          return { role: m.role, content: safeContent.slice(0, maxMsgChars) + "\n\n[message truncated]" };
-        }
-        return { role: m.role, content: safeContent };
-      });
-
-      const body = JSON.stringify({
-        model: config.model,
-        max_tokens: config.maxTokens || 4096,
-        temperature: config.temperature || 0.7,
-        messages: truncatedMessages,
-        stream: false,
-      });
-      
-      console.log('[AIService.XHR] Sending request to:', url);
-      xhr.send(body);
-    });
-    
-    console.log('[AIService.sendToOpenAI] Response URL:', response.url);
+    );
 
     if (!response.ok) {
       const error = await response.text().catch(() => null);
@@ -206,35 +129,12 @@ export class AIService {
       throw new Error(errorMessage);
     }
 
-    // Note: XHR implementation doesn't support streaming (stream: false is hardcoded)
-    // For streaming support, the fetch implementation with response.body would be needed
-    // if (callbacks && response.body) {
-    //   return this.handleStream(response.body, callbacks, "openai");
-    // }
+    if (callbacks && response.body) {
+      return this.handleStream(response.body, callbacks, "openai");
+    }
 
-    console.log('[AIService.sendToOpenAI] Response received, parsing JSON...');
-    
     const data = await response.json();
-    console.log('[AIService.sendToOpenAI] Parsed data:', data);
-    console.log('[AIService.sendToOpenAI] Choices:', data.choices);
-    
-    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-      console.error('[AIService.sendToOpenAI] Invalid response structure:', data);
-      throw new Error('Invalid response structure from API');
-    }
-    
-    const content = data.choices[0].message.content;
-    console.log('[AIService.sendToOpenAI] Extracted content:', content?.substring(0, 100));
-    
-    // If callbacks are provided but we didn't use streaming (XHR doesn't support it),
-    // emulate streaming by calling onToken with the full content and then onComplete
-    if (callbacks) {
-      console.log('[AIService.sendToOpenAI] Calling callbacks.onToken and onComplete...');
-      callbacks.onToken(content);
-      callbacks.onComplete(content);
-    }
-    
-    return content;
+    return data.choices[0].message.content;
   }
 
   // Send message to Gemini API
@@ -292,20 +192,13 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    // Ollama Cloud requires Bearer authentication, local Ollama does not
-    const isOllamaCloud = config.baseUrl?.includes("api.ollama.com");
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (isOllamaCloud && config.apiKey) {
-      headers["Authorization"] = `Bearer ${config.apiKey}`;
-    }
-
     const response = await fetch(
       `${config.baseUrl || "http://localhost:11434"}/api/chat`,
       {
         method: "POST",
-        headers,
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           model: config.model,
           messages: messages.map((m) => ({
@@ -605,14 +498,6 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    // DEBUG: Log the incoming config
-    console.log('[AIService.sendMessage] DEBUG - Incoming config:', {
-      provider: config.provider,
-      baseUrl: config.baseUrl,
-      name: config.name,
-      id: config.id
-    });
-    
     // AGGRESSIVE FIX: Any agent with ollama.com URLs gets migrated immediately
     // This catches agents saved with wrong baseUrl regardless of provider
     if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
@@ -626,101 +511,12 @@ export class AIService {
     // the first message. Vault fallback runs in the main process via IPC.
     // ─────────────────────────────────────────────────────────────────────
     let enrichedMessages = messages;
-    
-    // ─── SOUL + Capability Injection (v3.0) ────────────────────────────────
-    // Build comprehensive system prompt from SOUL.md, capabilities, and skills
-    // This creates a complete agent identity layer
-    // ─────────────────────────────────────────────────────────────────────
-    let soulCapabilitySystemPrompt = "";
-    try {
-      // Ensure capabilities are set up with defaults if missing
-      if (!config.capabilities) {
-        config.capabilities = {
-          enabledCapabilities: getRecommendedCapabilities(config.soulId),
-          vaultBoxAccess: config.boxAccess || [],
-        };
-      }
-      
-      // Ensure soul grade is current
-      if (config.soulId || config.soulOverride) {
-        config.soulGrade = await ensureSoulGrade(
-          config.soulId,
-          config.soulOverride,
-          config.soulGrade
-        );
-      }
-      
-      // Build agent context for system prompt
-      const agentContext = {
-        agentId: config.id,
-        agentName: config.name,
-        soulId: config.soulId,
-        soulOverride: config.soulOverride,
-        capabilities: config.capabilities,
-        vaultAccess: [], // Vault access loaded separately via IPC (see below)
-      };
-      
-      // Build system prompt parts
-      const promptParts = buildAgentSystemPrompt(agentContext);
-      soulCapabilitySystemPrompt = assembleSystemPrompt(promptParts);
-      
-      if (soulCapabilitySystemPrompt) {
-        console.log(`[AIService] SOUL/Capability system prompt built for ${config.name} (${soulCapabilitySystemPrompt.length} chars)`);
-      }
-    } catch (e) {
-      console.error("[AIService] SOUL/Capability system prompt build failed:", e);
-      // Continue without SOUL layer — don't break the chat
-    }
-
-    // ─── Vault Box Access Injection (v3.1) ─────────────────────────────────
-    // Load vault box contents via IPC if the agent has boxAccess configured.
-    // These boxes contain skill entries, credentials, and user data.
-    // ─────────────────────────────────────────────────────────────────────────
-    if (config.boxAccess && config.boxAccess.length > 0) {
-      try {
-        const vaultApi = (window as any).electronAPI?.vault;
-        if (vaultApi?.getBoxContent) {
-          const vaultParts: string[] = [];
-          for (const boxId of config.boxAccess) {
-            try {
-              const box = await vaultApi.getBoxContent(boxId);
-              if (box?.entries?.length > 0) {
-                const entryTexts = box.entries
-                  .map((e: any) => `- [${e.label || "untitled"}]: ${(e.content || "").slice(0, 300)}${(e.content || "").length > 300 ? "..." : ""}`)
-                  .join("\n");
-                vaultParts.push(`### Vault Box: ${box.name || boxId}\n${entryTexts}`);
-              }
-            } catch (boxErr) {
-              console.warn(`[AIService] Failed to load vault box ${boxId}:`, boxErr);
-            }
-          }
-          if (vaultParts.length > 0) {
-            const vaultSystemMsg: ChatMessage = {
-              id: `vault-system-${Date.now()}`,
-              role: "system",
-              content: `## Vault Knowledge\n\nYou have access to the following secure vault boxes:\n\n${vaultParts.join("\n\n")}\n\nReference these boxes by name when answering questions about stored data.`,
-              timestamp: Date.now(),
-              agentId: config.id,
-            };
-            // Prepend vault knowledge before existing messages
-            enrichedMessages = [vaultSystemMsg, ...enrichedMessages];
-            console.log(`[AIService] Vault boxes injected for ${config.name}: ${config.boxAccess.join(", ")}`);
-          }
-        } else {
-          console.warn(`[AIService] Vault IPC unavailable for ${config.name}, skipping vault injection`);
-        }
-      } catch (e) {
-        console.error("[AIService] Vault box injection failed:", e);
-      }
-    }
-    
     if (config.skills && config.skills.length > 0) {
       try {
         // Use main-process IPC to build the system prompt (fs only works in Node)
         const result = await (window as any).electronAPI?.skills?.buildSystemPrompt?.({
-          baseSystemPrompt: soulCapabilitySystemPrompt, // Include SOUL/capability content
+          baseSystemPrompt: "",
           skillNames: config.skills,
-          maxTokens: 12000, // cap skill injection to leave room for conversation
         });
 
         if (!result || result.loadedSkills.length === 0) {
@@ -784,8 +580,8 @@ export class AIService {
       case "ollama":
         return this.sendToOllama(config, enrichedMessages, callbacks);
       case "ollama-cloud":
-        // Ollama Cloud is OpenAI-compatible at api.ollama.com/v1/chat/completions
-        // Use sendToOpenAI with Bearer auth, not native Ollama /api/chat endpoint
+        // Ollama Cloud uses OpenAI-compatible endpoint at api.ollama.com
+        // Fix: migrate any saved agents that have the old/incorrect baseUrl
         const ollamaCloudBaseUrl = config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")
           ? "https://api.ollama.com"
           : (config.baseUrl || "https://api.ollama.com");
