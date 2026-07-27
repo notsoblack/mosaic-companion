@@ -143,4 +143,21 @@ export const chatAPI = {
     ipcRenderer.on("chat:error", listener);
     return () => ipcRenderer.removeListener("chat:error", listener);
   },
+
+  // ===========================================================================
+  // Buzz Bridge
+  // ===========================================================================
+
+  buzzStatus: () => ipcRenderer.invoke("buzz:status"),
+
+  buzzEnable: (enabled: boolean) => ipcRenderer.invoke("buzz:enable", enabled),
+
+  buzzSetRelay: (url: string) => ipcRenderer.invoke("buzz:set-relay", url),
+
+  buzzGetConfig: () => ipcRenderer.invoke("buzz:get-config"),
+
+  buzzDispatch: (agentId: string, task: string, channelTag: string) =>
+    ipcRenderer.invoke("buzz:dispatch", agentId, task, channelTag),
+
+  buzzImportKey: (nsec: string) => ipcRenderer.invoke("buzz:import-key", nsec),
 };

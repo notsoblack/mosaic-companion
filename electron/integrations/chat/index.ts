@@ -2,6 +2,7 @@ import { app, ipcMain, IpcMainInvokeEvent, BrowserWindow } from "electron";
 import fs from "fs";
 import path from "path";
 import { ChatClient } from "./client";
+import { initChat as initBuzzBridge, getBuzzBridge } from "./buzz-bridge";
 import {
   startAgentInRoom,
   stopAgentInRoom,
@@ -249,6 +250,41 @@ export function initChat(): void {
       return listAgentsInRoom(roomId);
     },
   );
+
+  // ── Buzz Bridge IPC handlers ────────────────────────────────────────────────
+  ipcMain.handle("buzz:status", async () => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.status();
+  });
+
+  ipcMain.handle("buzz:enable", async (_e: IpcMainInvokeEvent, enabled: boolean) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.enable(enabled);
+  });
+
+  ipcMain.handle("buzz:set-relay", async (_e: IpcMainInvokeEvent, url: string) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.setRelay(url);
+  });
+
+  ipcMain.handle("buzz:get-config", async () => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.getConfig();
+  });
+
+  ipcMain.handle("buzz:dispatch", async (_e: IpcMainInvokeEvent, agentId: string, task: string, channelTag: string) => {
+    try {
+      const bridge = getBuzzBridge() || initBuzzBridge();
+      return await bridge.dispatchAgentJob(agentId, task, channelTag);
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle("buzz:import-key", async (_e: IpcMainInvokeEvent, nsec: string) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return await bridge.importKey(nsec);
+  });
 }
 
 export function stopChat(): void {

@@ -75,7 +75,8 @@ import StargatePoolHub from './stargate/StargatePoolHub';
 import StargateTelemetryCard from './stargate/StargateTelemetryCard';
 import StargateCommunityAIMPanel from './stargate/StargateCommunityAIMPanel';
 import MidnightCityCommandPanel from './stargate/MidnightCityCommandPanel';
-import { Users, Trophy, GraduationCap, Package, Cpu, Zap, Star, ArrowRight, Search, Filter, RefreshCw, TrendingUp, CheckCircle, XCircle, Loader, Rocket, TrendingUpIcon, Code, Bot, Workflow, Sparkles, Settings, CpuIcon, LayoutDashboard, Wallet, Key, Building2, FolderOutput, Network, Shield, Lock,  Unlock, Layers, Server, Plus, BookOpen, Download, Wand2, ImagePlus, Pickaxe, Info } from 'lucide-react';
+import StargateBuzzPanel from './stargate/StargateBuzzPanel';
+import { Users, Trophy, GraduationCap, Package, Cpu, Zap, Star, ArrowRight, Search, Filter, RefreshCw, TrendingUp, CheckCircle, XCircle, Loader, Rocket, TrendingUpIcon, Code, Bot, Workflow, Sparkles, Settings, CpuIcon, LayoutDashboard, Wallet, Key, Building2, FolderOutput, Network, Shield, Lock,  Unlock, Layers, Server, Plus, BookOpen, Download, Wand2, ImagePlus, Pickaxe, Info, MessageSquare } from 'lucide-react';
 
 // ---- Module-level helper: ensure wallet is on Base chain ----
 async function ensureOnBaseChain(): Promise<void> {
@@ -102,7 +103,7 @@ interface AdaPortalPanelProps {
   onNavigateToChat?: (message: string) => void;
 }
 
-type TabId = 'start' | 'marketplace' | 'aims' | 'leaderboard' | 'training' | 'packages' | 'skills' | 'compute' | 'dashboard' | 'stargate' | 'midnight' | 'asp';
+type TabId = 'start' | 'marketplace' | 'aims' | 'leaderboard' | 'training' | 'packages' | 'skills' | 'compute' | 'dashboard' | 'stargate' | 'midnight' | 'buzz' | 'asp';
 type LeaderboardPeriod = 'daily' | 'weekly' | 'all_time';
 type ComputeTier = 'standard' | 'high_performance' | 'dedicated';
 
@@ -220,6 +221,7 @@ const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { id: 'stargate', label: 'Stargate Pool', icon: <Zap size={18} /> },
   { id: 'midnight', label: 'Midnight City', icon: <Pickaxe size={18} /> },
+  { id: 'buzz', label: 'Buzz', icon: <MessageSquare size={18} /> },
   { id: 'asp', label: 'Deploy System', icon: <Building2 size={18} /> }
 ];
 
@@ -243,6 +245,7 @@ export const AdaPortalPanel: React.FC<AdaPortalPanelProps> = ({
     if (url.includes('/bundles')) return 'packages';
     if (url.includes('/rankings')) return 'leaderboard';
     if (url.includes('/stargate')) return 'stargate';
+    if (url.includes('/buzz')) return 'buzz';
     if (url.includes('/asp')) return 'asp';
     return 'start';
   };
@@ -4467,6 +4470,7 @@ export const AdaPortalPanel: React.FC<AdaPortalPanelProps> = ({
             {activeTab === 'dashboard' && renderDashboard()}
             {activeTab === 'stargate' && renderStargatePool()}
             {activeTab === 'midnight' && <MidnightCityCommandPanel />}
+            {activeTab === 'buzz' && <StargateBuzzPanel userAgents={userAgents} />}
             {activeTab === 'asp' && renderAspGateway()}
           </>
         )}

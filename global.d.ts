@@ -500,6 +500,14 @@ declare global {
       onMemberJoined: (cb: (data: { roomId: string; member: Member }) => void) => () => void;
       onMemberLeft: (cb: (data: { roomId: string; memberId: string; username: string }) => void) => () => void;
       onError: (cb: (data: { message: string }) => void) => () => void;
+
+      // ── Buzz Bridge ──
+      buzzStatus: () => Promise<{ enabled: boolean; connected: boolean; npub?: string; relayUrl: string; lastError?: string }>;
+      buzzEnable: (enabled: boolean) => Promise<{ enabled: boolean; connected: boolean; npub?: string; relayUrl: string; lastError?: string }>;
+      buzzSetRelay: (url: string) => Promise<{ enabled: boolean; connected: boolean; npub?: string; relayUrl: string; lastError?: string }>;
+      buzzGetConfig: () => Promise<{ enabled: boolean; relayUrl: string; roomMapping: Record<string, string> }>;
+      buzzDispatch: (agentId: string, task: string, channelTag: string) => Promise<{ success: boolean; jobId?: string; error?: string }>;
+      buzzImportKey: (nsec: string) => Promise<{ success: boolean; npub?: string; error?: string }>;
     };
 
     // MosaicBot agent API

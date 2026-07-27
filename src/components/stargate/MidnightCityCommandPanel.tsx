@@ -157,7 +157,7 @@ const MidnightCityCommandPanelInner: React.FC = () => {
   const [nearbyAgents, setNearbyAgents] = useState<NearbyAgent[]>([]);
   const [discoveredAreas, setDiscoveredAreas] = useState<DiscoveredArea[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [activeTab, setActiveTab] = useState<"status" | "actions" | "script" | "factory" | "logs">("status");
+  const [activeTab, setActiveTab] = useState<"status" | "actions" | "script" | "factory" | "logs" | "config">("status");
   const [lastError, setLastError] = useState<string | null>(null);
   const [isMining, setIsMining] = useState(false);
   const [autoMine, setAutoMine] = useState(false);
@@ -558,6 +558,7 @@ const MidnightCityCommandPanelInner: React.FC = () => {
     { id: "actions" as const, label: "Actions", icon: Zap },
     { id: "script" as const, label: "Script", icon: FileCode },
     { id: "factory" as const, label: "Factory", icon: Box },
+    { id: "config" as const, label: "Config", icon: Settings },
     { id: "logs" as const, label: "Logs", icon: Terminal },
   ];
   return (
@@ -571,6 +572,15 @@ const MidnightCityCommandPanelInner: React.FC = () => {
           <span className="text-gray-400">Son of Anton</span>
         </div>
         <div className="flex items-center gap-3">
+          {/* Config button */}
+          <button
+            onClick={() => setActiveTab("config")}
+            className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold bg-gray-700/50 text-gray-300 border border-gray-600 hover:bg-gray-700 hover:text-white transition-colors"
+            title="Configure credentials"
+          >
+            <Settings size={12} /> CONFIG
+          </button>
+
           {/* Lock toggle */}
           <button
             onClick={toggleLock}
@@ -1034,6 +1044,45 @@ const MidnightCityCommandPanelInner: React.FC = () => {
                     {factoryResult}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── CONFIG TAB ───────────────────────────────────────────────────────── */}
+        {activeTab === "config" && (
+          <div className="space-y-4 max-w-lg">
+            <h3 className="font-bold text-cyan-400 flex items-center gap-2"><Settings size={16} /> Credentials &amp; Settings</h3>
+            <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 space-y-3">
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">API Endpoint</label>
+                <input
+                  type="text"
+                  defaultValue="http://localhost:3000"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="http://localhost:3000"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Agent ID</label>
+                <input
+                  type="text"
+                  defaultValue={agentId}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="user-agent-..."
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Session Token (optional)</label>
+                <input
+                  type="password"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="Leave empty for auto-auth"
+                />
+              </div>
+              <div className="pt-2 flex gap-2">
+                <button className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs rounded font-bold">Save</button>
+                <button className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded">Reset</button>
               </div>
             </div>
           </div>
