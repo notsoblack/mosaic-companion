@@ -1,5 +1,5 @@
 {
-  "exclude": ["chat-server", "node_modules", "dist", "tests", "external", "plugins", "playwright.config.ts"],
+  "exclude": ["chat-server", "node_modules", "dist", "tests", "external", "plugins", "playwright.config.ts", "examples", "bundled-skills"],
   "compilerOptions": {
     "target": "ES2022",
     "experimentalDecorators": true,
