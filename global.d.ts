@@ -26,7 +26,22 @@ declare global {
   interface VaultEntry {
     id: string;
     label?: string;
+    description?: string;
     content: string;
+    metadata?: {
+      installName?: string;
+      category?: string;
+      sourceRepo?: string;
+      isTasteSkill?: boolean;
+      version?: string;
+      dials?: {
+        designVariance?: number;
+        motionIntensity?: number;
+        visualDensity?: number;
+      };
+      lastPreset?: string;
+      outputType?: "code" | "images" | "both";
+    };
     createdAt: number;
     updatedAt: number;
   }
@@ -315,12 +330,12 @@ declare global {
         getAgentBoxes: (agentId: string) => Promise<VaultBox[]>;
         // Content
         getBoxContent: (boxId: string) => Promise<VaultEntry[]>;
-        addEntry: (boxId: string, input: { content: string; label?: string }) => Promise<{
+        addEntry: (boxId: string, input: { content: string; label?: string; metadata?: any }) => Promise<{
           success: boolean;
           entry?: VaultEntry;
           error?: string;
         }>;
-        updateEntry: (boxId: string, entryId: string, updates: { content?: string; label?: string }) => Promise<{
+        updateEntry: (boxId: string, entryId: string, updates: { content?: string; label?: string; metadata?: any }) => Promise<{
           success: boolean;
           entry?: VaultEntry;
           error?: string;
@@ -351,33 +366,6 @@ declare global {
         deleteNodeData: (license: string) => Promise<{ success: boolean; error?: string }>;
         getSavedAims: (license?: string) => Promise<any>;
         handlePayment: (paymentData: any) => Promise<{ success: boolean; error?: string; result?: any }>;
-        // Stage 7B: Node profile
-        getNodeProfile: (license: number | string) => Promise<any>;
-        // Stage 7C: Tool score cache
-        getToolScore: (endpointUrl: string) => Promise<any>;
-        getAllToolScores: () => Promise<any>;
-        getToolScoresLastUpdated: () => Promise<any>;
-        // Stage 8A: AIM profile / nodes
-        getAimProfile:  (name: string) => Promise<any>;
-        getAimNodes:    (name: string, opts?: { version?: string; userLat?: number; userLng?: number }) => Promise<any>;
-        getAimBestNode: (name: string, opts?: { version?: string; userLat?: number; userLng?: number }) => Promise<any>;
-        // Stage 8B / Stage 7 probe data
-        getAimDeployments: (aimId: number) => Promise<any[]>;
-        getToolStatus: (toolId: string) => Promise<any>;
-        subscribe: (payload: { endpointUrl: string; aimId?: number; nodeLicense?: number }) => Promise<any>;
-        getSubscriptions: () => Promise<any[]>;
-        unsubscribe: (subscriptionId: string) => Promise<any>;
-        getVerificationHistory: (subscriptionId: string) => Promise<any[]>;
-        clearCache: () => Promise<void>;
-      };
-
-      // AIM Nodes (separate namespace for new hooks/components)
-      aimNodes: {
-        saveNodeData: (license: string, data: any) => Promise<{ success: boolean; error?: string }>;
-        deleteNodeData: (license: string) => Promise<{ success: boolean; error?: string }>;
-        getSavedAims: (license?: string) => Promise<any>;
-        /** Handle a __payment_required signal from MCP. Shows approval modal, executes JIT payment if approved, retries tool call. */
-        handlePayment: (paymentData: any) => Promise<{ success: boolean; result?: any; error?: string }>;
       };
 
       // Media — safe data: URI delivery for tool-generated media
@@ -433,6 +421,59 @@ declare global {
       // File dialog
       dialog: {
         openFile: (options?: { filters?: Array<{ name: string; extensions: string[] }> }) => Promise<string | null>;
+        openDirectory: () => Promise<string | null>;
+      };
+
+      // Node Factory Tracker — CBNO license fleet health
+      nodeFactory: {
+        loadJsonFile: (filePath: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+        checkLicense: (licenseId: string, apiBase: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+      };
+
+      // Skills (Hermes MCP + local)
+      skills: {
+        buildSystemPrompt: (payload: {
+          baseSystemPrompt?: string;
+          skillNames: string[];
+          includeReferences?: boolean;
+          maxTokens?: number;
+          dialOverrides?: Record<string, number>;
+        }) => Promise<{
+          systemPrompt: string;
+          loadedSkills: string[];
+          failedSkills: string[];
+          totalTokens: number;
+        }>;
+        syncToNode: (payload: {
+          skillNames: string[];
+          nodeId: string;
+          nodeHost?: string;
+        }) => Promise<{
+          success: boolean;
+          synced: string[];
+          failed: string[];
+          verified: string[];
+          activated: string[];
+          remoteSkillDir: string;
+          logs: string[];
+        }>;
+      };
+
+      // Krea AI Image Generation
+      krea: {
+        generate: (payload: {
+          prompt: string;
+          aspectRatio?: string;
+          creativity?: number;
+          negativePrompt?: string;
+          styleReference?: string;
+          moodboard?: string[];
+          numImages?: number;
+          seed?: number;
+          outputFormat?: string;
+        }) => Promise<any>;
+        checkStatus: (generationId: string) => Promise<any>;
+        downloadImage: (imageUrl: string, destPath: string) => Promise<any>;
       };
     };
 
@@ -441,26 +482,32 @@ declare global {
       saveSettings: (s: ChatSettings) => Promise<{ success: boolean; error?: string }>;
       connect: () => Promise<{ success: boolean; error?: string }>;
       disconnect: () => Promise<{ success: boolean }>;
-      status: () => Promise<{ status: string; memberId?: string }>;
+      status: () => Promise<{ status: string }>;
       listRooms: () => Promise<{ success: boolean; error?: string }>;
       createRoom: (name: string, visibility?: string) => Promise<{ success: boolean; error?: string }>;
       joinRoom: (roomId: string) => Promise<{ success: boolean; error?: string }>;
       leaveRoom: (roomId: string) => Promise<{ success: boolean; error?: string }>;
-      deleteRoom: (roomId: string) => Promise<{ success: boolean; error?: string }>;
       sendMessage: (roomId: string, text: string) => Promise<{ success: boolean; error?: string }>;
-      assignAgent: (roomId: string, agentId: string, agentName: string) => Promise<{ success: boolean }>;
+      assignAgent: (roomId: string, agentId: string, agentName: string, trainingContext?: { skillName: string; systemPrompt?: string }) => Promise<{ success: boolean }>;
       removeAgent: (roomId: string, agentId: string) => Promise<{ success: boolean }>;
       listAssignedAgents: (roomId: string) => Promise<string[]>;
-      onConnectionChanged: (cb: (data: { status: string; memberId?: string }) => void) => () => void;
+      onConnectionChanged: (cb: (data: { status: string }) => void) => () => void;
       onRoomsUpdated: (cb: (rooms: Room[]) => void) => () => void;
       onRoomCreated: (cb: (room: Room) => void) => () => void;
       onJoined: (cb: (data: { room: Room; history: StoredMessage[] }) => void) => () => void;
       onLeft: (cb: (data: { roomId: string }) => void) => () => void;
-      onRoomDeleted: (cb: (data: { roomId: string }) => void) => () => void;
       onMessage: (cb: (message: StoredMessage) => void) => () => void;
       onMemberJoined: (cb: (data: { roomId: string; member: Member }) => void) => () => void;
       onMemberLeft: (cb: (data: { roomId: string; memberId: string; username: string }) => void) => () => void;
       onError: (cb: (data: { message: string }) => void) => () => void;
+
+      // ── Buzz Bridge ──
+      buzzStatus: () => Promise<{ enabled: boolean; connected: boolean; npub?: string; relayUrl: string; lastError?: string }>;
+      buzzEnable: (enabled: boolean) => Promise<{ enabled: boolean; connected: boolean; npub?: string; relayUrl: string; lastError?: string }>;
+      buzzSetRelay: (url: string) => Promise<{ enabled: boolean; connected: boolean; npub?: string; relayUrl: string; lastError?: string }>;
+      buzzGetConfig: () => Promise<{ enabled: boolean; relayUrl: string; roomMapping: Record<string, string> }>;
+      buzzDispatch: (agentId: string, task: string, channelTag: string) => Promise<{ success: boolean; jobId?: string; error?: string }>;
+      buzzImportKey: (nsec: string) => Promise<{ success: boolean; npub?: string; error?: string }>;
     };
 
     // MosaicBot agent API
@@ -469,6 +516,53 @@ declare global {
       triggerHeartbeat: (agentId?: string) => Promise<{ ok: boolean }>;
       listSkills: () => Promise<Array<{ name: string; description: string }>>;
       onMessage: (cb: (msg: { to: string; text: string; channel: string; messageId: string }) => void) => void;
+      // ── NEW: Skill Importer ──
+      getImportLog: () => Promise<Array<{
+        hermesPath: string; mosaicPath: string; importedAt: number;
+        version: string; status: string;
+      }>>;
+      getPendingImports: () => Promise<Array<{
+        hermesPath: string; version: string; importedAt: number;
+      }>>;
+      approveSkill: (name: string) => Promise<boolean>;
+      removeSkill: (name: string) => Promise<boolean>;
+      forceScan: () => Promise<{ imported: number; pending: number; skipped: number }>;
+      // ── NEW: Orchestrator ──
+      getOrchestratorStatus: () => Promise<{
+        vaultBoxes: number; mcpServers: number; agents: number;
+        lastCheck: number;
+        infraHealth: Record<string, { healthy: boolean; checkedAt: number }>;
+      }>;
+      getAgentProfiles: () => Promise<Array<{
+        agentId: string; intervalMin: number;
+        activeHours: { start: string; end: string };
+        description: string;
+      }>>;
+      // ── NEW: Memory Bridge — Codebase Memory MCP ──
+      queryContext: (project: string, query: string, limit?: number) => Promise<Array<{
+        qualified_name: string; name: string; label: string;
+        file: string; score?: number;
+      }>>;
+      getSessionContext: () => Promise<{
+        recentSkills: string[];
+        recentProjects: string[];
+        activeBoxes: string[];
+        recentTasks: string[];
+        patterns: string[];
+      }>;
+      indexSession: (sessionId: string, summary: string, skills: string[], projects: string[]) => Promise<{ indexed: boolean }>;
+
+      // ── Stargate Registry — Component Self-Awareness ──
+      getStargateComponents: () => Promise<Array<{ id: string; name: string; category: string; description: string; status: string; commands: string[] }>>;
+      getStargateFleet: () => Promise<Array<{ id: string; name: string; ip: string; aimSlots: number; status: string; notes: string[] }>>;
+      getStargateContracts: () => Promise<Array<{ id: string; name: string; contractAddress: string; chain: string; status: string }>>;
+      getStargateDown: () => Promise<Array<{ id: string; name: string; status: string }>>;
+      getStargateSummary: () => Promise<string>;
+      getStargateCapabilities: () => Promise<string>;
+      // ── Stargate Indexer ──
+      indexStargate: () => Promise<{ indexed: boolean; entries: number; errors: string[] }>;
+      getStargateHistory: (limit?: number) => Promise<Array<{ timestamp: number; downCount: number; components: any[]; fleet: any[] }>>;
+      getStargateTrend: () => Promise<{ improving: boolean; currentDown: number; previousDown: number; trend: string }>;
     };
 
     // MosaicBot memory API

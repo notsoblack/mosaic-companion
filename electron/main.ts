@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, IpcMainInvokeEvent, powerMonitor, protocol, net } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, IpcMainInvokeEvent, powerMonitor, protocol, net, Menu, MenuItem, shell } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -32,17 +32,26 @@ import {
   deleteAllAgentHistories,
   getErrorMessage,
 } from "./utils/index";
-import { mcpClient, setMainWindow as mcpSetMainWindow, initPlugins } from "./integrations/mcp/index";
+import { mcpClient, setMainWindow as mcpSetMainWindow, initPlugins } from "./integrations/mcp";
+import { startMarketplaceService } from "./services/marketplace/MarketplaceService";
+import { midnightCityService } from "./services/MidnightCityBackgroundService";
 import { initializeTools, cleanupTools } from "./integrations/tools";
 import { initMosaicBot } from "./integrations/mosaicbot/src/main/index";
+import { startSPOServer, stopSPOServer } from "./integrations/pool/orchestrator/SPOServer";
 import { initChat, setMainWindow as setChatMainWindow, stopChat } from "./integrations/chat/index";
 import { initIDE, cleanupIDE } from "./integrations/ide/index";
+import { registerCardanoIpc } from "./integrations/cardano/ipcHandlers";
+import { agentForgeEngine } from "./integrations/forge/AgentForgeEngine";
 // Plugin IPC handler registrations
-import { registerHyperInsightIpc, stopScorePolling } from "../plugins/hyperinsight/main/index.js";
+import { registerHyperInsightIpc } from "../plugins/hyperinsight/main/index.js";
 import { registerAimNodesIpc } from "../plugins/aim-nodes/main/index.js";
 import { registerPaymentsJitIpc } from "../plugins/payments-jit/main/index.ts";
 import { createRequire } from 'module';
+import { KreaClient } from "../src/services/krea/KreaClient";
 import { authenticate, isAuthenticated, signOut } from "./integrations/gmail";
+import { skillInjector } from "../src/services/skillInjector";
+import { importRepoSkills, defaultExternalRepoPresets, type ExternalRepoRef } from "../src/services/externalSkillImporter";
+import { startVaultSkillWatcher } from "../src/services/vaultSkillCache";
 import { getUserProfile, getRecentEmails, getEmailDetails, searchEmails, markAsRead, markAsUnread } from "./integrations/gmail/gmailClient";
 import {
   loadConfig,
@@ -62,7 +71,7 @@ import {
   type NetworkConfig,
   clearTodaTwinInfoAddress,
 } from "./integrations/web3/config";
-import { saveWalletKey } from "./integrations/web3/index";
+import { getWalletKey, saveWalletKey, getWalletAddress } from "./integrations/web3/index";
 import { signHypercycleNonceWithWallet } from "./integrations/web3/hypercycleSign";
 import {
   saveTodaApiKey,
@@ -83,14 +92,7 @@ import {
   deleteEntry,
 } from "./integrations/vault";
 import type { VaultBox } from "./integrations/vault/types";
-import {
-  readAgents,
-  readAgentsStored,
-  writeAgents,
-  validateActiveHypercycleAgent,
-  validateAgentsListForActivation,
-  type AIAgent,
-} from "./agents";
+import { mergeBuiltinAgents } from "./defaultAiAgents";
 
 // =============================================================================
 // ESM Path Setup
@@ -120,6 +122,11 @@ interface Node {
   licenseKey?: string;
 }
 
+interface AIAgent {
+  id: string | number;
+  name: string;
+  [key: string]: unknown;
+}
 
 interface ChatSession {
   id: string;
@@ -222,6 +229,14 @@ function createWindow(urlToLoad: string | null = null): BrowserWindow {
     },
   });
 
+  // Suppress Chromium Autofill protocol errors (not available in current Electron)
+  // These are benign devtools warnings that spam the console
+  win.webContents.on('console-message', (_event, level, message) => {
+    if (message && message.includes('Autofill.')) {
+      return; // swallow Autofill protocol errors
+    }
+  });
+
   // Load the app
   if (urlToLoad) {
     win.loadURL(urlToLoad);
@@ -282,7 +297,6 @@ function recreateWindow(): void {
 // App Lifecycle
 // =============================================================================
 app.on("before-quit", () => {
-  stopScorePolling();
   mcpClient.disconnectAll();
   cleanupTools().catch(console.error);
   if (mosaicBotStop) mosaicBotStop().catch(console.error);
@@ -299,16 +313,39 @@ app.on("web-contents-created", (_event, contents) => {
   });
 });
 
+// Enable copy/paste context menu (fix from community installer)
+app.on('browser-window-created', (_, win) => {
+  win.webContents.on('context-menu', (e, params) => {
+    const menu = new Menu();
+    if (params.isEditable) {
+      menu.append(new MenuItem({ role: 'paste', label: 'Paste' }));
+      menu.append(new MenuItem({ role: 'copy', label: 'Copy' }));
+      menu.append(new MenuItem({ role: 'cut', label: 'Cut' }));
+      menu.append(new MenuItem({ type: 'separator' }));
+      menu.append(new MenuItem({ role: 'selectAll', label: 'Select All' }));
+    } else if (params.selectionText) {
+      menu.append(new MenuItem({ role: 'copy', label: 'Copy' }));
+    }
+    menu.popup();
+  });
+});
+
 // Must be called before app is ready
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'mosaic-media', privileges: { bypassCSP: true, supportFetchAPI: true, corsEnabled: true } }
+  { scheme: 'mosaic-media', privileges: { bypassCSP: true, supportFetchAPI: true, corsEnabled: true } },
+  { scheme: 'stargate-vault', privileges: { bypassCSP: true, supportFetchAPI: true, corsEnabled: true } }
 ]);
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   console.log("App is packaged:", app.isPackaged);
   console.log("User data path:", app.getPath("userData"));
   console.log("__dirname:", __dirname);
   console.log("PROJECT_ROOT:", PROJECT_ROOT);
+
+  // ── Start internal marketplace service ──
+  // Provides the REST API that the MCP bridge and the frontend panel consume.
+  // Runs on port 13000 by default (override via STARGATE_INTERNAL_MARKETPLACE_PORT).
+  startMarketplaceService();
 
   // Register custom protocol for safely serving local media files
   protocol.handle('mosaic-media', (request) => {
@@ -321,6 +358,20 @@ app.whenReady().then(() => {
     // Only serve files that actually live inside the media directory
     if (!filePath.startsWith(mediaDir)) {
        return new Response('Access Denied', { status: 403 });
+    }
+    
+    return net.fetch(`file://${filePath}`);
+  });
+
+  // Register protocol for serving Stargate Vault JSON data
+  protocol.handle('stargate-vault', (request) => {
+    const urlStr = request.url.replace(/^stargate-vault:\/\//, '');
+    const vaultDir = path.join(__dirname, '..', 'renderer', 'stargate-vault');
+    const filePath = path.join(vaultDir, path.normalize(urlStr));
+    
+    // Security: ensure path is inside vault directory
+    if (!filePath.startsWith(vaultDir)) {
+      return new Response('Access Denied', { status: 403 });
     }
     
     return net.fetch(`file://${filePath}`);
@@ -350,21 +401,45 @@ app.whenReady().then(() => {
   registerHyperInsightIpc(ipcMain);
   registerAimNodesIpc(ipcMain);
   registerPaymentsJitIpc(ipcMain);
+  registerCardanoIpc();
 
   // Now auto-connect MCP plugins (with correct env already set)
   initPlugins().catch((e) => console.error("[MCP] Plugin init failed:", e));
   initChat();
   initIDE();
-
-  // Initialize tool registry
   initializeTools().catch((e) => console.error("[Tools] Init failed:", e));
 
-  // Initialize MosaicBot agent subsystem
+  // Start vault skill watcher so skillInjector cache clears when vault skills are edited at runtime
+  try {
+    startVaultSkillWatcher();
+  } catch (e) {
+    console.warn("[VaultSkillCache] Failed to start watcher:", e);
+  }
+
   initMosaicBot().then((bot) => {
     mosaicBotStop = bot.stop.bind(bot);
   }).catch((e) => {
     console.error("[MosaicBot] Init failed:", e);
   });
+
+  // ── Start Stargate Pool Orchestrator (SPO) Server ──
+  // NOTE: A standalone SPO may already be running as systemd service spo-server.service.
+  // Check port 9100 first — EADDRINUSE is an async 'error' event that would crash the app.
+  (async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:9100/api/health", {
+        signal: AbortSignal.timeout(1500),
+      }).catch(() => null);
+      if (res && res.ok) {
+        console.log("[SPO] External SPO already running on :9100 (systemd spo-server.service) — using it, skipping embedded server");
+        return;
+      }
+      startSPOServer(9100);
+      console.log("[SPO] Embedded server started on port 9100");
+    } catch (e) {
+      console.error("[SPO] Failed to start server:", e);
+    }
+  })();
 
   // Initialize updater (production only)
   if (app.isPackaged) {
@@ -422,6 +497,28 @@ ipcMain.handle("show-title-bar-confirm", async () => {
   return { buttonIndex: result.response };
 });
 
+// HyperCycle Node status IPC (from community installer)
+ipcMain.handle("get-node-status", async () => {
+  try {
+    const http = await import('http');
+    return new Promise((resolve) => {
+      http.get('http://localhost:8000/info', (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            resolve(null);
+          }
+        });
+      }).on('error', () => resolve(null));
+    });
+  } catch {
+    return null;
+  }
+});
+
 ipcMain.handle("window:minimize", () => {
   if (mainWindow) mainWindow.minimize();
 });
@@ -444,6 +541,22 @@ ipcMain.handle("window:is-maximized", () => {
   return mainWindow ? mainWindow.isMaximized() : false;
 });
 
+// Open external URLs in default browser (from community installer)
+ipcMain.on("open-external", (event, url) => {
+  // Only open known-safe local URLs in the system browser (prevent external nav)
+  const isLocal =
+    url.startsWith('http://localhost') ||
+    url.startsWith('http://127.0.') ||
+    url.startsWith('https://localhost') ||
+    url.startsWith('https://127.0.') ||
+    url.startsWith('file://');
+  if (isLocal) {
+    shell.openExternal(url);
+  } else {
+    console.warn(`[open-external] Blocked non-local URL: ${url}`);
+  }
+});
+
 // File dialog for sandbox tool installation
 ipcMain.handle("dialog:open-file", async (_event, options?: { filters?: Array<{ name: string; extensions: string[] }> }) => {
   const { dialog } = await import("electron");
@@ -453,6 +566,51 @@ ipcMain.handle("dialog:open-file", async (_event, options?: { filters?: Array<{ 
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle("dialog:open-directory", async () => {
+  const { dialog } = await import("electron");
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+// ── Node Factory Tracker IPC ───────────────────────────────────────────────
+// Loads a licenses.json from the user's filesystem (sandbox-safe via renderer → main)
+ipcMain.handle("nodeFactory:loadJsonFile", async (_event, filePath: string) => {
+  try {
+    const data = fs.readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(data);
+    return { success: true, data: parsed };
+  } catch (e: any) {
+    return { success: false, error: e.message || "Failed to load JSON file" };
+  }
+});
+
+// Proxies license_status checks through the main process so renderer doesn't
+// need CORS permissions against the CBNO API.
+ipcMain.handle("nodeFactory:checkLicense", async (_event, licenseId: string, apiBase: string) => {
+  try {
+    const response = await fetch(`${apiBase}/license_status?license=${encodeURIComponent(licenseId)}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return { success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}` };
+    }
+    const data = await response.json();
+    if (data.error) {
+      return { success: false, error: data.error, data };
+    }
+    return { success: true, data };
+  } catch (e: any) {
+    if (e.name === "TimeoutError" || e.name === "AbortError") {
+      return { success: false, error: "Request timed out after 10s" };
+    }
+    return { success: false, error: e.message || "Network error" };
+  }
 });
 
 // CSV Logging
@@ -551,11 +709,194 @@ ipcMain.handle("nodes:delete", async (_event: IpcMainInvokeEvent, id: string) =>
   return result;
 });
 
+// =============================================================================
+// AIMIFIER IPC — Hermes → HyperCycle AIM Pipeline
+// =============================================================================
+
+import { spawn } from "child_process";
+
+ipcMain.handle("aimify:exec", async (_event, command: string, args: string[], options?: { cwd?: string; timeout?: number }) => {
+  return new Promise((resolve) => {
+    const { cwd, timeout = 300000 } = options || {};
+    const proc = spawn(command, args, { cwd, shell: false });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      resolve({ success: false, exitCode: -1, stdout, stderr: stderr + "\n[TIMEOUT]" });
+    }, timeout);
+    proc.stdout.on("data", (data) => { stdout += data.toString(); });
+    proc.stderr.on("data", (data) => { stderr += data.toString(); });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ success: code === 0, exitCode: code || 0, stdout, stderr });
+    });
+  });
+});
+
+ipcMain.handle("aimify:write-file", async (_event, filePath: string, content: string) => {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content, "utf8");
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("aimify:read-file", async (_event, filePath: string) => {
+  try {
+    const fs = require("fs");
+    const content = fs.readFileSync(filePath, "utf8");
+    return { success: true, content };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// =============================================================================
+// HERMES DASHBOARD LIFECYCLE — spawn/stop/status for kanban UI
+// =============================================================================
+let hermesDashboardProc: any = null;
+
+ipcMain.handle("hermes:start-dashboard", async (event, port?: number) => {
+  const p = port || 9000;
+  // If already running, just report status
+  if (hermesDashboardProc && !hermesDashboardProc.killed) {
+    return { success: true, status: 'already-running', port: p, pid: hermesDashboardProc.pid };
+  }
+  // Check if another dashboard is already running (e.g., user started manually)
+  try {
+    const { execSync } = require("child_process");
+    const psOut = execSync(`hermes dashboard --status 2>/dev/null || true`, { encoding: "utf8", timeout: 5000 });
+    if (psOut.includes("PID")) {
+      return { success: true, status: 'externally-running', port: p };
+    }
+  } catch (_e) {}
+  // Spawn daemonized process so it outlives Electron
+  try {
+    hermesDashboardProc = spawn("hermes", ["dashboard", "--port", String(p), "--no-open", "--skip-build"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, HERMES_KANBAN_BOARD: process.env.HERMES_KANBAN_BOARD || "stargate" },
+    });
+    hermesDashboardProc.unref(); // allow parent to exit without killing child
+    // Wait up to 10s for HTTP readiness
+    for (let attempt = 0; attempt <= 20; attempt++) {
+      try {
+        const { execSync } = require("child_process");
+        const probe = execSync(`curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:${p}`, {
+          encoding: "utf8", timeout: 1500,
+        });
+        if (probe.trim() === "200") {
+          return { success: true, status: 'ready', port: p, pid: hermesDashboardProc.pid };
+        }
+      } catch (_e) {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return { success: true, status: 'started-but-not-ready', port: p, pid: hermesDashboardProc.pid };
+  } catch (error: any) {
+    return { success: false, status: 'error', error: error.message };
+  }
+});
+
+ipcMain.handle("hermes:stop-dashboard", async () => {
+  if (hermesDashboardProc && !hermesDashboardProc.killed) {
+    hermesDashboardProc.kill("SIGTERM");
+    hermesDashboardProc = null;
+  }
+  return { success: true, status: 'stopped' };
+});
+
+ipcMain.handle("hermes:dashboard-status", async (event, port?: number) => {
+  const p = port || 9000;
+  const isOursRunning = !!(hermesDashboardProc && !hermesDashboardProc.killed);
+  // Also probe the HTTP endpoint
+  try {
+    const { execSync } = require("child_process");
+    const probe = execSync(`curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://127.0.0.1:${p}`, {
+      encoding: "utf8", timeout: 3000,
+    });
+    const httpOk = probe.trim() === "200";
+    return { success: true, running: isOursRunning || httpOk, port: p, httpOk };
+  } catch (_e) {
+    return { success: true, running: isOursRunning, port: p, httpOk: false };
+  }
+});
+
 // Sandbox State
 ipcMain.handle("sandbox:get-state", async () => sandboxState);
 
-// AI Agents Storage (persistence + key encryption live in ./agents)
+// AI Agents Storage
+const aiAgentsPath = path.join(app.getPath("userData"), "ai-agents.json");
 const themesPath = path.join(app.getPath("userData"), "themes.json");
+
+function validateActiveHypercycleAgent(agent: AIAgent): string | null {
+  if (agent.provider !== "hypercycle") return null;
+  if (agent.isActive !== true) return null;
+  const basechain = agent.hypercycleBackend === "basechain";
+  if (basechain) {
+    if (!getWalletKey()) {
+      return "Import an EVM wallet in Web3 settings (Base) before activating this Basechain Hypercycle agent.";
+    }
+  } else if (!hasTodaConfig()) {
+    return "Configure TODA Twin (hostname + API key) in Web3 settings before activating this TODA Hypercycle agent.";
+  }
+  return null;
+}
+
+function validateAgentsListForActivation(agents: AIAgent[]): string | null {
+  for (const a of agents) {
+    const err = validateActiveHypercycleAgent(a);
+    if (err) return err;
+  }
+  return null;
+}
+
+function readAgents(): AIAgent[] {
+  let raw: AIAgent[] = [];
+  try {
+    if (fs.existsSync(aiAgentsPath)) {
+      const data = fs.readFileSync(aiAgentsPath, "utf8");
+      raw = JSON.parse(data);
+    }
+  } catch (error) {
+    console.error("Failed to read AI agents:", error);
+  }
+  // Migrate old Ollama agents that were saved with cloud model names to ollama-cloud provider
+  let sanitized = false;
+  for (const a of raw) {
+    const model = (a as any).model as string;
+    if (a.provider === "ollama" && model && model.includes(":cloud")) {
+      console.log(`[Main] Migrating Ollama agent "${a.name}" model ${a.model} → ollama-cloud provider`);
+      a.provider = "ollama-cloud" as AIAgent["provider"];
+      a.baseUrl = a.baseUrl || "https://api.ollama.com";
+      a.model = (a.model as string).replace(/:cloud$/, ""); // strip :cloud suffix
+      sanitized = true;
+    }
+  }
+  if (sanitized) {
+    writeAgents(raw);
+  }
+  const { agents, changed } = mergeBuiltinAgents(raw);
+  if (changed) {
+    writeAgents(agents);
+  }
+  return agents;
+}
+
+function writeAgents(agents: AIAgent[]): boolean {
+  try {
+    fs.writeFileSync(aiAgentsPath, JSON.stringify(agents, null, 2), "utf8");
+    return true;
+  } catch (error) {
+    console.error("Failed to write AI agents:", error);
+    return false;
+  }
+}
 
 function readThemeSettings(): ThemeSettings {
   try {
@@ -583,9 +924,6 @@ ipcMain.handle("ai-agents:get", async () => {
   return readAgents();
 });
 
-// Note: writeAgents encrypts keys. A renderer-supplied full list would persist
-// "" for keys it couldn't decrypt (apiKeyUnavailable) — acceptable since no
-// renderer calls ai-agents:set today.
 ipcMain.handle("ai-agents:set", async (_event: IpcMainInvokeEvent, agents: AIAgent[]) => {
   try {
     const err = validateAgentsListForActivation(agents);
@@ -599,8 +937,7 @@ ipcMain.handle("ai-agents:set", async (_event: IpcMainInvokeEvent, agents: AIAge
 
 ipcMain.handle("ai-agents:add", async (_event: IpcMainInvokeEvent, agent: AIAgent) => {
   try {
-    // Stored (encrypted) form: keeps existing key blobs verbatim on rewrite.
-    const agents = readAgentsStored();
+    const agents = readAgents();
     agents.push(agent);
     writeAgents(agents);
     const agentPath = path.join(agentsHistoryPath, agent.id.toString());
@@ -613,10 +950,7 @@ ipcMain.handle("ai-agents:add", async (_event: IpcMainInvokeEvent, agent: AIAgen
 
 ipcMain.handle("ai-agents:update", async (_event: IpcMainInvokeEvent, id: string, updates: Partial<Omit<AIAgent, "id">>) => {
   try {
-    // Merge partial updates into the stored (encrypted) agents so blobs that
-    // can't be decrypted here survive; a new plaintext updates.apiKey gets
-    // encrypted by writeAgents.
-    const agents = readAgentsStored();
+    const agents = readAgents();
     const index = agents.findIndex((a) => a.id === id);
     if (index === -1) {
       return { success: false, error: "Agent not found" };
@@ -634,7 +968,7 @@ ipcMain.handle("ai-agents:update", async (_event: IpcMainInvokeEvent, id: string
 
 ipcMain.handle("ai-agents:delete", async (_event: IpcMainInvokeEvent, id: string) => {
   try {
-    const agents = readAgentsStored();
+    const agents = readAgents();
     const filtered = agents.filter((a) => a.id !== id);
     writeAgents(filtered);
     return { success: true };
@@ -827,9 +1161,10 @@ ipcMain.handle("web3:sign-hypercycle-nonce", async (_event, nonce: string) => {
 
 // Web3 wallet import (secure paths — key never passes through renderer IPC)
 function isValidPrivateKey(key: string): boolean {
-  const trimmed = key.trim();
-  if (!trimmed) return false;
-  const hex = trimmed.startsWith("0x") ? trimmed.slice(2) : trimmed;
+  // Strip ALL whitespace (spaces, newlines, tabs) that copy/paste often introduces
+  const cleaned = key.replace(/\s+/g, "").trim();
+  if (!cleaned) return false;
+  const hex = cleaned.startsWith("0x") ? cleaned.slice(2) : cleaned;
   return /^[a-fA-F0-9]{64}$/.test(hex);
 }
 
@@ -840,8 +1175,11 @@ ipcMain.handle("web3:import-from-clipboard", async () => {
       return { success: false, error: "Clipboard does not contain a valid Ethereum private key (64 hex chars, optional 0x prefix)." };
     }
     const ok = saveWalletKey(text.trim());
-    if (ok) clipboard.clear();
-    return { success: ok };
+    if (!ok.success) return { success: false, error: ok.error || "Failed to save wallet key." };
+    const address = getWalletAddress();
+    mainWindow?.webContents.send("wallet:imported");
+    mainWindow?.webContents.send("wallet:changed", { address });
+    return { success: true, address };
   } catch {
     return { success: false, error: "Failed to import from clipboard." };
   }
@@ -849,10 +1187,17 @@ ipcMain.handle("web3:import-from-clipboard", async () => {
 
 ipcMain.handle("web3:import-wallet-secure", async (_event, privateKey: string) => {
   try {
-    if (!isValidPrivateKey(privateKey)) {
+    // Strip internal whitespace that copy-paste often introduces
+    const cleaned = privateKey.replace(/\s+/g, "").trim();
+    if (!isValidPrivateKey(cleaned)) {
       return { success: false, error: "Invalid private key format." };
     }
-    return { success: saveWalletKey(privateKey.trim()) };
+    const ok = saveWalletKey(cleaned);
+    if (!ok.success) return { success: false, error: ok.error || "Failed to save wallet." };
+    const address = getWalletAddress();
+    mainWindow?.webContents.send("wallet:imported");
+    mainWindow?.webContents.send("wallet:changed", { address });
+    return { success: true, address };
   } catch {
     return { success: false, error: "Failed to save wallet." };
   }
@@ -970,14 +1315,14 @@ ipcMain.handle("vault:get-box-content", async (_event: IpcMainInvokeEvent, boxId
 
 ipcMain.handle(
   "vault:add-entry",
-  async (_event: IpcMainInvokeEvent, boxId: string, input: { content: string; label?: string }) => {
+  async (_event: IpcMainInvokeEvent, boxId: string, input: any) => {
     return addEntry(boxId, input);
   },
 );
 
 ipcMain.handle(
   "vault:update-entry",
-  async (_event: IpcMainInvokeEvent, boxId: string, entryId: string, updates: { content?: string; label?: string }) => {
+  async (_event: IpcMainInvokeEvent, boxId: string, entryId: string, updates: any) => {
     return updateEntry(boxId, entryId, updates);
   },
 );
@@ -986,6 +1331,34 @@ ipcMain.handle(
   "vault:delete-entry",
   async (_event: IpcMainInvokeEvent, boxId: string, entryId: string) => {
     return deleteEntry(boxId, entryId);
+  },
+);
+
+ipcMain.handle(
+  "vault:import-external-skills",
+  async (_event: IpcMainInvokeEvent, refs?: ExternalRepoRef[], targetBoxId?: string) => {
+    try {
+      // Ensure target box exists
+      let boxId = targetBoxId;
+      if (!boxId) {
+        const existing = getBoxes().find((b) => b.name.toLowerCase() === "external skills");
+        if (existing) {
+          boxId = existing.id;
+        } else {
+          const created = addBox({ name: "External Skills", description: "Imported SKILL.md files from external repos", sourceType: "import" });
+          if (!created.success || !created.box) {
+            return { success: false, imported: 0, failed: 0, errors: [created.error || "Failed to create External Skills box"] };
+          }
+          boxId = created.box.id;
+        }
+      }
+      const skillRefs = refs && refs.length > 0 ? refs : defaultExternalRepoPresets();
+      const result = await importRepoSkills(skillRefs, async (entry) => addEntry(boxId!, entry));
+      return { ...result, boxId };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { success: false, imported: 0, failed: 0, errors: [msg] };
+    }
   },
 );
 
@@ -1040,4 +1413,865 @@ ipcMain.handle("media:get-auto-display", () => {
 ipcMain.handle("media:set-auto-display", (_event, enabled: boolean) => {
   const result = setAutoDisplayMedia(enabled);
   return { ...result, enabled: getAutoDisplayMedia() };
+});
+
+// =============================================================================
+// Fleet Mesh Dispatch — Tailscale SSH cross-node command execution
+// =============================================================================
+
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
+
+ipcMain.handle(
+  "mesh:dispatch",
+  async (_event: IpcMainInvokeEvent, payload: { host: string; user: string; command: string; timeout?: number }) => {
+    const start = Date.now();
+    try {
+      const { host, user, command, timeout = 30000 } = payload;
+      console.log(`[MAIN mesh:dispatch] start — host=${host}, user=${user}, timeout=${timeout}ms, cmdChars=${command.length}`);
+      const sshCmd = `ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ${user}@${host} '${command.replace(/'/g, "'\\''")}'`;
+      const { stdout, stderr } = await execAsync(sshCmd, { timeout });
+      console.log(`[MAIN mesh:dispatch] success — host=${host}, stdoutChars=${stdout.trim().length}, stderrChars=${stderr.trim().length}, latency=${Date.now()-start}ms`);
+      return { success: true, exitCode: 0, stdout: stdout.trim(), stderr: stderr.trim() };
+    } catch (error: any) {
+      console.error(`[MAIN mesh:dispatch] FAILED — host=${payload.host}, code=${error.code || '?'}, latency=${Date.now()-start}ms, stderr=${(error.stderr || error.message).slice(0, 200)}`);
+      return {
+        success: false,
+        exitCode: error.code || 1,
+        stdout: error.stdout || '',
+        stderr: error.stderr || error.message,
+      };
+    }
+  },
+);
+
+ipcMain.handle("stargate:tilling:provision", async (_event, payload) => {
+  try {
+    const res = await fetch("http://localhost:9100/api/v1/tilling/provision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:provision] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:tilling:stop", async (_event, tenantId: string) => {
+  try {
+    const res = await fetch("http://localhost:9100/api/v1/tilling/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantId }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:stop] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:tilling:getSessions", async (_event, wallet?: string) => {
+  try {
+    const url = wallet
+      ? `http://localhost:9100/api/v1/tilling/sessions?userWallet=${encodeURIComponent(wallet)}`
+      : "http://localhost:9100/api/v1/tilling/sessions";
+    const res = await fetch(url);
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:getSessions] failed:", error);
+    return { success: false, error: error.message || String(error), sessions: [] };
+  }
+});
+
+ipcMain.handle("stargate:tilling:resume", async (_event, tenantId: string) => {
+  try {
+    const res = await fetch("http://localhost:9100/api/v1/tilling/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantId }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:resume] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:tilling:lock", async (_event, tenantId: string, locked: boolean) => {
+  try {
+    const res = await fetch("http://localhost:9100/api/v1/tilling/lock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantId, locked }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:lock] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+// ── Tiller Management (Non-custodial signing flow) ───────────────────────────
+
+ipcMain.handle("stargate:tilling:create", async (_event, tenantId: string) => {
+  try {
+    const res = await fetch(`http://localhost:9100/api/v1/tilling/${tenantId}/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:create] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:tilling:getMessage", async (_event, tenantId: string, number: number, license: string, chypc: string) => {
+  try {
+    const url = `http://localhost:9100/api/v1/tilling/${tenantId}/message?number=${encodeURIComponent(number)}&license=${encodeURIComponent(license)}&chypc=${encodeURIComponent(chypc)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:getMessage] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:tilling:update", async (_event, tenantId: string, payload: any) => {
+  try {
+    const res = await fetch(`http://localhost:9100/api/v1/tilling/${tenantId}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    return data;
+  } catch (error: any) {
+    console.error("[stargate:tilling:update] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:dispatchPrompt", async (_event, nodeId: string, prompt: string) => {
+  try {
+    const nodes = getNodes();
+    const node = nodes.find((n: any) => n.nodeId === nodeId || n.id === nodeId);
+    if (!node?.apiHost) {
+      return { success: false, error: `Node ${nodeId} not found or no apiHost` };
+    }
+    const safeCommand = `~/.local/bin/hermes chat -q ${JSON.stringify(prompt)}`;
+    const { exec } = require("child_process");
+    const { promisify } = require("util");
+    const execAsync = promisify(exec);
+    const sshCmd = `ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no hyperai@${node.apiHost} '${safeCommand.replace(/'/g, "'\\''")}'`;
+    const { stdout, stderr } = await execAsync(sshCmd, { timeout: 30000 });
+    return { success: true, response: stdout.trim(), stderr: stderr.trim() };
+  } catch (error: any) {
+    console.error(`[stargate:dispatchPrompt] failed:`, error);
+    return { success: false, error: error.message || String(error), response: '' };
+  }
+});
+
+ipcMain.handle("stargate:runJob", async (_event, jobType: string, params: Record<string, any>) => {
+  try {
+    const { spawn } = require("child_process");
+    const hermesPath = require("os").homedir() + "/.local/bin/hermes";
+    let args: string[] = [];
+    let description = "";
+    if (jobType === "hire") {
+      const p = params;
+      args = ["kanban", "create", `Deploy ${p.agentName || "agent"}`, "--body", p.description || "", "--assignee", p.profile || "backend-eng"];
+      description = `Hire ${p.agentName}`;
+    } else if (jobType === "train") {
+      const p = params;
+      args = ["kanban", "create", `Train ${p.agentId} on ${p.skillName}`, "--body", p.description || "", "--assignee", p.profile || "researcher"];
+      description = `Train ${p.agentId}`;
+    } else {
+      return { success: false, error: `Unknown job type: ${jobType}` };
+    }
+    return new Promise((resolve) => {
+      const child = spawn(hermesPath, args, { detached: false });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (d: Buffer) => stdout += d.toString());
+      child.stderr?.on("data", (d: Buffer) => stderr += d.toString());
+      child.on("close", (code) => {
+        resolve({
+          success: code === 0,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+          description,
+        });
+      });
+      child.on("error", (err) => {
+        resolve({ success: false, error: err.message });
+      });
+    });
+  } catch (error: any) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+// =============================================================================
+// IDE Agent Forge — Test + Deploy IPC handlers (v2: AgentForgeEngine)
+// =============================================================================
+
+ipcMain.handle("stargate:testAgentCode", async (_event, code: string, templateId: string) => {
+  return agentForgeEngine.runTest(code, templateId);
+});
+
+ipcMain.handle("stargate:deployAgentCode", async (_event, code: string, config: Record<string, unknown>) => {
+  return agentForgeEngine.deploy(code, config as any);
+});
+
+ipcMain.handle("stargate:forge:listDeployed", async () => {
+  return { success: true, agents: agentForgeEngine.getDeployedAgents() };
+});
+
+ipcMain.handle("stargate:forge:listRunning", async () => {
+  return { success: true, agents: agentForgeEngine.getRunningAgents() };
+});
+
+ipcMain.handle("stargate:forge:stopAgent", async (_event, agentId: string) => {
+  return { success: agentForgeEngine.stopAgent(agentId) };
+});
+
+// =============================================================================
+// IDE Agent Forge — Cross-node Deploy (v2.1: SSH to Fleet Nodes)
+// =============================================================================
+
+ipcMain.handle("stargate:deployAgentToNode", async (_event, code: string, config: Record<string, unknown>) => {
+  const { templateId, nodeConfig, autoStart, enableWallet, tier } = config as any;
+  if (!nodeConfig?.host || !nodeConfig?.user) {
+    return { success: false, error: "nodeConfig requires host and user fields" };
+  }
+  return agentForgeEngine.deployToNode(code, {
+    templateId,
+    nodeConfig: { host: nodeConfig.host, user: nodeConfig.user, agentDir: nodeConfig.agentDir },
+    autoStart: autoStart ?? true,
+    enableWallet: enableWallet ?? false,
+    tier: tier ?? "standard",
+  });
+});
+
+// =============================================================================
+// IDE Agent Forge — Health Monitoring (v2.2)
+// =============================================================================
+
+ipcMain.handle("stargate:forge:enableHealthCheck", async (_event, agentId: string, intervalMs?: number, maxRestarts?: number) => {
+  const manifest = agentForgeEngine.getDeployedAgents().find(m => m.id === agentId);
+  if (!manifest) return { success: false, error: "Agent not found" };
+  agentForgeEngine.enableHealthCheck(agentId, manifest, { intervalMs, maxRestarts });
+  return { success: true };
+});
+
+ipcMain.handle("stargate:forge:disableHealthCheck", async (_event, agentId: string) => {
+  agentForgeEngine.disableHealthCheck(agentId);
+  return { success: true };
+});
+
+ipcMain.handle("stargate:forge:isHealthy", async (_event, agentId: string) => {
+  return { healthy: agentForgeEngine.isHealthy(agentId) };
+});
+
+// =============================================================================
+// Skill Delivery Pipeline — sync Hermes skills to fleet node before dispatch
+// =============================================================================
+// PHASE 1+2+3 combined: resolve skill path → SCP to node → verify → activate
+// =============================================================================
+
+ipcMain.handle(
+  "skill:buildSystemPrompt",
+  async (
+    _event: IpcMainInvokeEvent,
+    payload: { baseSystemPrompt?: string; skillNames: string[]; includeReferences?: boolean; maxTokens?: number; dialOverrides?: { designVariance?: number; motionIntensity?: number; visualDensity?: number } }
+  ): Promise<{ systemPrompt: string; loadedSkills: string[]; failedSkills: string[]; totalTokens: number }> => {
+    // Phase A+B: try Hermes skills dir (local + Vault)
+    const result = skillInjector.buildSystemPrompt(
+      payload.baseSystemPrompt ?? "",
+      payload.skillNames,
+      { includeReferences: payload.includeReferences ?? true, maxTokens: payload.maxTokens, dialOverrides: payload.dialOverrides }
+    );
+
+    // Phase C: try Hermes MCP for any still-failed skills (e.g. kanban-orchestrator)
+    if (result.failedSkills.length > 0) {
+      try {
+        const mcpImports = await Promise.all(
+          result.failedSkills.map(async (name) => {
+            try {
+              // Lazy-load mcpSkillResolver only in this branch
+              const { loadMcpSkill } = require("../src/services/mcpSkillResolver");
+              const mcpSkill = await loadMcpSkill(name);
+              return { name, mcpSkill };
+            } catch (e) {
+              return { name, mcpSkill: null };
+            }
+          })
+        );
+
+        for (const { name, mcpSkill } of mcpImports) {
+          if (mcpSkill?.skillMd) {
+            // Inject into system prompt just like a local skill
+            const skillSection = `--- BEGIN SKILL: ${name} ---\n\n${mcpSkill.skillMd}\n\n--- END SKILL: ${name} ---`;
+            result.systemPrompt += (result.systemPrompt ? "\n\n" : "") + skillSection;
+            result.loadedSkills.push(name);
+            result.totalTokens = Math.ceil(result.systemPrompt.length / 4);
+            console.log(`[main.ts] Skill "${name}" resolved via Hermes MCP server`);
+          }
+        }
+
+        // Remove successfully loaded skills from failed list
+        const loadedFromMcp = new Set(result.loadedSkills);
+        result.failedSkills = result.failedSkills.filter(
+          (name) => !loadedFromMcp.has(name)
+        );
+      } catch (e) {
+        console.warn("[main.ts] MCP skill resolution failed:", e);
+      }
+    }
+
+    // Phase D: Stargate Vault index fallback (repo-shipped 283 skills)
+    if (result.failedSkills.length > 0) {
+      try {
+        const vaultIndexPath = path.join(app.getAppPath(), "stargate-vault", "vault-index.json");
+        if (fs.existsSync(vaultIndexPath)) {
+          const vault = JSON.parse(fs.readFileSync(vaultIndexPath, "utf-8"));
+          // Build flat map: skillName → category
+          const skillToCategory: Record<string, string> = {};
+          for (const [cat, names] of Object.entries(vault.categories as Record<string, string[]>)) {
+            for (const n of names) skillToCategory[n] = cat;
+          }
+
+          for (const name of [...result.failedSkills]) {
+            const category = skillToCategory[name];
+            if (category) {
+              const skillSection = `--- BEGIN SKILL: ${name} (Stargate Vault) ---\n\nThis skill is registered in the Stargate Vault under category "${category}".\nWhen the user references this skill, search the vault index for related skills in the ${category} category and use them to fulfill the request.\n\n--- END SKILL: ${name} ---`;
+              result.systemPrompt += (result.systemPrompt ? "\n\n" : "") + skillSection;
+              result.loadedSkills.push(name);
+              result.failedSkills = result.failedSkills.filter((f) => f !== name);
+              console.log(`[main.ts] Skill "${name}" resolved via Stargate Vault index (${category})`);
+            }
+          }
+          result.totalTokens = Math.ceil(result.systemPrompt.length / 4);
+        }
+      } catch (e) {
+        console.warn("[main.ts] Stargate Vault skill resolution failed:", e);
+      }
+    }
+
+    return result;
+  }
+);
+
+ipcMain.handle(
+  "stargate:skill:syncToNode",
+  async (
+    _event: IpcMainInvokeEvent,
+    payload: { skillNames: string[]; nodeId: string; nodeHost?: string }
+  ): Promise<{
+    success: boolean;
+    synced: string[];
+    failed: string[];
+    verified: string[];
+    activated: string[];
+    remoteSkillDir: string;
+    logs: string[];
+  }> => {
+    const { skillNames, nodeId, nodeHost } = payload;
+    const logs: string[] = [];
+    const remoteSkillDir = '~/.hermes/skills/stargate-incoming';
+
+    logs.push(`[SkillDelivery] Starting sync of ${skillNames.length} skills to ${nodeId}`);
+
+    // Resolve node host
+    const host = nodeHost || (() => {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const home = require('os').homedir();
+        // Read fleet registry from settings or fallback to known locations
+        const registryPath = path.join(home, '.config', 'mosaic-companion', 'fleet_registry.json');
+        if (fs.existsSync(registryPath)) {
+          const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+          const node = (data.nodes || []).find((n: any) => n.nodeId === nodeId);
+          return node?.apiHost || null;
+        }
+        return null;
+      } catch { return null; }
+    })();
+
+    if (!host) {
+      logs.push(`[SkillDelivery] ERROR: no host resolved for node ${nodeId}`);
+      return { success: false, synced: [], failed: skillNames, verified: [], activated: [], remoteSkillDir, logs };
+    }
+    logs.push(`[SkillDelivery] Resolved host: ${host}`);
+
+    const synced: string[] = [];
+    const failed: string[] = [];
+
+    // PHASE 1: Sync each skill via SCP
+    for (const skillName of skillNames) {
+      try {
+        // Resolve skill path
+        const skillPath = (() => {
+          const path = require('path');
+          const fs = require('fs');
+          const hermesHome = process.env.HERMES_HOME || path.join(require('os').homedir(), '.hermes');
+          const skillsBase = path.join(hermesHome, 'skills');
+          if (!fs.existsSync(skillsBase)) return null;
+
+          const direct = path.join(skillsBase, skillName, 'SKILL.md');
+          if (fs.existsSync(direct)) return path.join(skillsBase, skillName);
+
+          try {
+            const cats = fs.readdirSync(skillsBase, { withFileTypes: true })
+              .filter((d: any) => d.isDirectory()).map((d: any) => d.name);
+            for (const cat of cats) {
+              const nested = path.join(skillsBase, cat, skillName, 'SKILL.md');
+              if (fs.existsSync(nested)) return path.join(skillsBase, cat, skillName);
+              // Deep: ~/.hermes/skills/<category>/<subcategory>/<name>/
+              try {
+                const subs = fs.readdirSync(path.join(skillsBase, cat), { withFileTypes: true })
+                  .filter((d: any) => d.isDirectory()).map((d: any) => d.name);
+                for (const sub of subs) {
+                  const deep = path.join(skillsBase, cat, sub, skillName, 'SKILL.md');
+                  if (fs.existsSync(deep)) return path.join(skillsBase, cat, sub, skillName);
+                }
+              } catch { /* subdir unreadable */ }
+            }
+          } catch { }
+          return null;
+        })();
+
+        if (!skillPath) {
+          failed.push(`${skillName}: path not found`);
+          logs.push(`[SkillDelivery] FAIL: skill path not found for ${skillName}`);
+          continue;
+        }
+
+        // Create remote directory via SSH
+        const mkdirResult = await (async () => {
+          try {
+            const { exec } = require('child_process');
+            const { promisify } = require('util');
+            const execAsync = promisify(exec);
+            const sshCmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no hyperai@${host} 'mkdir -p ${remoteSkillDir}/${skillName}'`;
+            await execAsync(sshCmd, { timeout: 10000 });
+            return true;
+          } catch { return false; }
+        })();
+
+        if (!mkdirResult) {
+          failed.push(`${skillName}: mkdir failed`);
+          logs.push(`[SkillDelivery] FAIL: mkdir failed for ${skillName}`);
+          continue;
+        }
+
+        // SCP skill directory
+        const scpResult = await (async () => {
+          try {
+            const { execSync } = require('child_process');
+            const cmd = `scp -r -o ConnectTimeout=5 -o StrictHostKeyChecking=no "${skillPath}" hyperai@${host}:${remoteSkillDir}/${skillName}`;
+            execSync(cmd, { timeout: 30000, stdio: 'pipe' });
+            return true;
+          } catch { return false; }
+        })();
+
+        if (!scpResult) {
+          failed.push(`${skillName}: scp failed`);
+          logs.push(`[SkillDelivery] FAIL: scp failed for ${skillName}`);
+          continue;
+        }
+
+        synced.push(skillName);
+        logs.push(`[SkillDelivery] OK: ${skillName} synced to ${nodeId}`);
+      } catch (e: any) {
+        failed.push(`${skillName}: ${e.message}`);
+        logs.push(`[SkillDelivery] FAIL: ${skillName} exception: ${e.message}`);
+      }
+    }
+
+    // PHASE 3: Verify
+    const verified: string[] = [];
+    for (const skillName of synced) {
+      try {
+        const { exec } = require('child_process');
+        const { promisify } = require('util');
+        const execAsync = promisify(exec);
+        const checkCmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no hyperai@${host} 'test -f ${remoteSkillDir}/${skillName}/SKILL.md && echo OK || echo MISSING'`;
+        const { stdout } = await execAsync(checkCmd, { timeout: 10000 });
+        if (stdout.trim() === 'OK') {
+          verified.push(skillName);
+          logs.push(`[SkillDelivery] VERIFY: ${skillName} present`);
+        } else {
+          logs.push(`[SkillDelivery] VERIFY: ${skillName} MISSING`);
+        }
+      } catch {
+        logs.push(`[SkillDelivery] VERIFY: ${skillName} check failed`);
+      }
+    }
+
+    // PHASE 4: Activate into Hermes skills path
+    const activated: string[] = [];
+    for (const skillName of verified) {
+      try {
+        const { exec } = require('child_process');
+        const { promisify } = require('util');
+        const execAsync = promisify(exec);
+        const activateCmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no hyperai@${host} 'mkdir -p ~/.hermes/skills && cp -r ${remoteSkillDir}/${skillName} ~/.hermes/skills/ && echo OK || echo FAIL'`;
+        const { stdout } = await execAsync(activateCmd, { timeout: 10000 });
+        if (stdout.trim() === 'OK') {
+          activated.push(skillName);
+          logs.push(`[SkillDelivery] ACTIVATE: ${skillName} ready`);
+        } else {
+          logs.push(`[SkillDelivery] ACTIVATE: ${skillName} failed`);
+        }
+      } catch {
+        logs.push(`[SkillDelivery] ACTIVATE: ${skillName} exception`);
+      }
+    }
+
+    logs.push(`[SkillDelivery] DONE: synced=${synced.length}, verified=${verified.length}, activated=${activated.length}`);
+    return { success: activated.length > 0, synced, failed, verified, activated, remoteSkillDir, logs };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Krea AI Image Generation IPC Handlers
+// ═══════════════════════════════════════════════════════════════════════════
+
+ipcMain.handle(
+  "krea:generate",
+  async (_event: IpcMainInvokeEvent, payload: any) => {
+    try {
+      const apiKey = process.env.KREA_API_KEY || "";
+      if (!apiKey) {
+        return { success: false, error: "KREA_API_KEY not configured" };
+      }
+      const client = new KreaClient({ apiKey });
+      const result = await client.generate(payload);
+      return { success: true, ...result };
+    } catch (e: any) {
+      console.error("[Krea] Generation failed:", e);
+      return { success: false, error: e.message };
+    }
+  }
+);
+
+ipcMain.handle(
+  "krea:checkStatus",
+  async (_event: IpcMainInvokeEvent, generationId: string) => {
+    try {
+      const apiKey = process.env.KREA_API_KEY || "";
+      if (!apiKey) {
+        return { success: false, error: "KREA_API_KEY not configured" };
+      }
+      const client = new KreaClient({ apiKey });
+      const result = await client.getStatus(generationId);
+      return { success: true, ...result };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+);
+
+ipcMain.handle(
+  "krea:downloadImage",
+  async (_event: IpcMainInvokeEvent, imageUrl: string, destPath: string) => {
+    try {
+      const fs = require("fs");
+      const https = require("https");
+      const http = require("http");
+      const url = new URL(imageUrl);
+      const protocol = url.protocol === "https:" ? https : http;
+
+      return new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(destPath);
+        protocol.get(imageUrl, (response: any) => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`Download failed: ${response.statusCode}`));
+            return;
+          }
+          response.pipe(file);
+          file.on("finish", () => {
+            file.close();
+            resolve({ success: true, path: destPath });
+          });
+        }).on("error", (err: any) => {
+          fs.unlink(destPath, () => {});
+          reject(err);
+        });
+      });
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+);
+
+// =============================================================================
+// Midnight City Command Panel — IPC Bridge
+// =============================================================================
+
+// =============================================================================
+// Midnight City Command Panel — IPC Bridge (v2: Background Service)
+// Session + heartbeat + auto-reconnect live in the main process. Renderer only
+// holds UI state. Lock/unlock controls whether the session survives tab switches.
+// =============================================================================
+
+// Connect agent — creates session in main process
+ipcMain.handle("midnight:connect", async (_event, params: { agentId: string }) => {
+  const result = await midnightCityService.connect(params.agentId);
+  return result;
+});
+
+// Disconnect — respects lock (unless force=true)
+ipcMain.handle("midnight:disconnect", async (_event, params: { force?: boolean } = {}) => {
+  const result = await midnightCityService.disconnect(params.force);
+  return result;
+});
+
+// Get connection status from main process
+ipcMain.handle("midnight:getStatus", async () => {
+  return midnightCityService.getStatus();
+});
+
+// Get recent logs from main process
+ipcMain.handle("midnight:getLogs", async () => {
+  return midnightCityService.getLogs();
+});
+
+// Lock / unlock the agent session
+ipcMain.handle("midnight:setLock", async (_event, locked: boolean) => {
+  midnightCityService.setLock(locked);
+  return { locked };
+});
+
+// Generic API call — proxied through background service
+ipcMain.handle("midnight:apiCall", async (_event, params: { endpoint: string; method: "GET" | "POST"; body?: any }) => {
+  return midnightCityService.apiCall(params);
+});
+
+// Script operations (unchanged — filesystem only)
+ipcMain.handle("midnight:readScript", async (_event, filePath: string) => {
+  try {
+    const fs = require("fs");
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: `File not found: ${filePath}` };
+    }
+    const content = fs.readFileSync(filePath, "utf8");
+    return { success: true, content };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("midnight:writeScript", async (_event, params: { path: string; content: string }) => {
+  try {
+    const fs = require("fs");
+    fs.writeFileSync(params.path, params.content, "utf8");
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("midnight:restartMiner", async () => {
+  try {
+    const { spawn } = require("child_process");
+    const scriptPath = "/home/mauricio/.hermes/scripts/sonofanton_miner.py";
+    const fs = require("fs");
+    if (!fs.existsSync(scriptPath)) {
+      return { success: false, error: "Miner script not found" };
+    }
+    // Kill any existing sonofanton process
+    try {
+      const { execSync } = require("child_process");
+      execSync("pkill -f sonofanton_miner.py || true", { stdio: "ignore" });
+      await new Promise((r) => setTimeout(r, 500));
+    } catch {}
+    // Spawn new process
+    const child = spawn("python3", [scriptPath], {
+      detached: true,
+      stdio: "ignore",
+      cwd: "/home/mauricio/.hermes/scripts",
+    });
+    child.unref();
+    return { success: true, pid: child.pid };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("midnight:deployAgent", async (_event, params: { name: string; profession: string; baseImage: string }) => {
+  try {
+    const { name, profession, baseImage } = params;
+    const nodeApi = "http://localhost:8000";
+    const infoResp = await fetch(`${nodeApi}/info`);
+    if (!infoResp.ok) {
+      return { success: false, error: "Node API unreachable" };
+    }
+    const info = await infoResp.json();
+    const usedSlots = (info.aim?.aims || []).map((a: any) => a.slot);
+    const nextSlot = Math.max(0, ...usedSlots) + 1;
+    const port = 9000 + nextSlot;
+    const { execSync } = require("child_process");
+    const imageId = execSync(`docker inspect --format='{{.Id}}' ${baseImage} 2>/dev/null || echo ""`, { encoding: "utf8" }).trim();
+    if (!imageId) {
+      return { success: false, error: `Docker image ${baseImage} not found locally` };
+    }
+    const shortId = imageId.replace("sha256:", "");
+    const mongoCmd = `mongosh node_manager --quiet --eval 'db.aims.insertOne({_id: ${port}, image_id: "${shortId}", image_name: "midnight-miner-${name.toLowerCase().replace(/[^a-z0-9]/g, "-")}", image_tag: "${baseImage.split(":").pop() || "latest"}", status: "offline", machine_type: "aim", whitelisted: true, next_download_try: 0, tries: 0})'`;
+    execSync(mongoCmd, { stdio: "ignore" });
+    return { success: true, slot: nextSlot, port };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+// =============================================================================
+// STARGATE RPC RESILIENCE — Hermes Doctor IPC Handlers
+// =============================================================================
+// Provides health check and diagnostic endpoints for the Stargate Pool
+// RPC resilience system (exponential backoff, fallback rotation, degraded mode)
+// =============================================================================
+
+// Dynamic import for the RPC resilience modules (renderer-side code)
+// These handlers bridge to the StargatePool services via IPC
+ipcMain.handle("stargate:doctor:check", async () => {
+  try {
+    // Import the doctor check function dynamically
+    // Note: This runs in the renderer context through the preload bridge
+    // The actual implementation is in SharedRPCLimiter.ts
+    const { doctorCheck } = await import(
+      /* webpackIgnore: true */
+      "../src/services/StargatePool/SharedRPCLimiter"
+    );
+    const result = await doctorCheck();
+    return { success: true, ...result };
+  } catch (error: any) {
+    console.error("[stargate:doctor:check] failed:", error);
+    return {
+      success: false,
+      error: error.message || String(error),
+      timestamp: Date.now(),
+      chains: [],
+      alchemy: { usingDemoKey: true, ethereumKeyValid: null, baseKeyValid: null },
+      summary: { healthy: 0, unhealthy: 0, degraded: 0 },
+    };
+  }
+});
+
+ipcMain.handle("stargate:doctor:reset", async () => {
+  try {
+    const { resetGlobalCircuit } = await import(
+      /* webpackIgnore: true */
+      "../src/services/StargatePool/SharedRPCLimiter"
+    );
+    resetGlobalCircuit();
+    return { success: true, message: "All circuits reset" };
+  } catch (error: any) {
+    console.error("[stargate:doctor:reset] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:doctor:status", async () => {
+  try {
+    const { debugCircuitState, getDegradedModeStatus, isDegradedMode } = await import(
+      /* webpackIgnore: true */
+      "../src/services/StargatePool/SharedRPCLimiter"
+    );
+    
+    return {
+      success: true,
+      timestamp: Date.now(),
+      circuits: debugCircuitState(),
+      ethereum: {
+        degraded: isDegradedMode('ethereum'),
+        ...getDegradedModeStatus('ethereum'),
+      },
+      base: {
+        degraded: isDegradedMode('base'),
+        ...getDegradedModeStatus('base'),
+      },
+    };
+  } catch (error: any) {
+    console.error("[stargate:doctor:status] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:alchemy:status", async () => {
+  try {
+    const { alchemyKeyManager } = await import(
+      /* webpackIgnore: true */
+      "../src/services/StargatePool/AlchemyKeyManager"
+    );
+    
+    const status = alchemyKeyManager.getMigrationStatus();
+    return {
+      success: true,
+      ...status,
+    };
+  } catch (error: any) {
+    console.error("[stargate:alchemy:status] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:alchemy:setKeys", async (_event, params: { ethereumKey?: string; baseKey?: string }) => {
+  try {
+    const { alchemyKeyManager } = await import(
+      /* webpackIgnore: true */
+      "../src/services/StargatePool/AlchemyKeyManager"
+    );
+    
+    if (params.ethereumKey) {
+      alchemyKeyManager.setEthereumKey(params.ethereumKey);
+    }
+    if (params.baseKey) {
+      alchemyKeyManager.setBaseKey(params.baseKey);
+    }
+    
+    // Validate the new keys
+    const validation = await alchemyKeyManager.validateCurrentKeys();
+    
+    return {
+      success: true,
+      validation,
+    };
+  } catch (error: any) {
+    console.error("[stargate:alchemy:setKeys] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("stargate:alchemy:validate", async () => {
+  try {
+    const { alchemyKeyManager } = await import(
+      /* webpackIgnore: true */
+      "../src/services/StargatePool/AlchemyKeyManager"
+    );
+    
+    const result = await alchemyKeyManager.validateCurrentKeys();
+    return {
+      success: true,
+      ...result,
+    };
+  } catch (error: any) {
+    console.error("[stargate:alchemy:validate] failed:", error);
+    return { success: false, error: error.message || String(error) };
+  }
 });

@@ -26,18 +26,12 @@ export function registerTerminalHandlers(): void {
       try {
         const id = `term-${nextId++}`;
         const shell = getDefaultShell();
-        const proc = ptyModule.spawn(shell, process.platform === "win32" ? [] : ["-l", "-i"], {
+        const proc = ptyModule.spawn(shell, [], {
           name: "xterm-256color",
           cols: 80,
           rows: 24,
           cwd,
-          env: (() => {
-            // npm_config_prefix (set by Homebrew) conflicts with nvm and prevents
-            // it from loading, leaving node off PATH. Strip it so the shell profile
-            // can set up the environment cleanly.
-            const { npm_config_prefix: _, ...cleanEnv } = process.env;
-            return { ...cleanEnv, TERM: "xterm-256color" } as Record<string, string>;
-          })(),
+          env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
         });
 
         terminals.set(id, proc);

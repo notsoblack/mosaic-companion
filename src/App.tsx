@@ -52,14 +52,9 @@ function App() {
         );
         setHasAgents(activeAgents.length > 0);
 
-        // If agents already exist but onboarding flag wasn't set (returning user), mark done.
-        // Ignore the merged-in builtin agents (mosaic-default-*) — they exist on every
-        // install, and counting them meant fresh installs never saw onboarding.
-        const userAgents = agents.filter(
-          (a) => !String(a.id).startsWith("mosaic-default-"),
-        );
+        // If agents already exist but onboarding flag wasn't set (returning user), mark done
         const onboardingDone = localStorage.getItem("mosaic_onboarding_complete");
-        if (!onboardingDone && userAgents.length > 0) {
+        if (!onboardingDone && agents.length > 0) {
           localStorage.setItem("mosaic_onboarding_complete", "true");
           // Navigate away from onboarding if we landed there
           setTabs((prev) =>
@@ -520,6 +515,7 @@ function App() {
           <BottomBar
             onSubmit={handleBottomBarSubmit}
             hasAgents={hasAgents}
+            currentUrl={activeTab.history.present}
           />
         )}
       </main>

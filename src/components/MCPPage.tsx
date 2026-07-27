@@ -15,6 +15,8 @@ import {
   Globe,
   HardDrive,
   ShieldAlert,
+  Lock,
+  Pencil,
 } from "lucide-react";
 
 // =============================================================================
@@ -39,6 +41,8 @@ interface MCPPlugin {
   url?: string;
   apiKey?: string;
   autoConnect?: boolean;
+  oauthRequired?: boolean;
+  oauthState?: string;
 }
 
 interface MCPTool {
@@ -466,10 +470,15 @@ export const MCPPage: React.FC = () => {
 
     const offConnected = api.onServerConnected(() => { loadServers(); loadOsStatus(); });
     const offDisconnected = api.onServerDisconnected(() => { loadServers(); loadOsStatus(); });
+    const offError = api.onServerError(({ name, error }) => {
+      console.error(`[MCP] Server error from "${name}":`, error);
+      setError(`MCP server "${name}" error: ${error}`);
+    });
 
     return () => {
       offConnected();
       offDisconnected();
+      offError();
     };
   }, [loadPlugins, loadServers, loadOsStatus]);
 
@@ -499,9 +508,19 @@ export const MCPPage: React.FC = () => {
     setConnecting((c) => ({ ...c, [plugin.id]: true }));
     setError(null);
     try {
+      // OAuth-required MCP servers (Base MCP, etc.) need browser sign-in
+      if (plugin.oauthRequired && !plugin.oauthState) {
+        // Start OAuth flow — BrowserWindow will open for Base Account sign-in
+        const res = await api.oauthConnect(plugin.id);
+        if (!res.success) setError(res.error ?? "OAuth connection failed");
+        await loadServers();
+        await loadPlugins();
+        return;
+      }
       const res = await api.connectPlugin(plugin.id);
       if (!res.success) setError(res.error ?? "Connection failed");
       await loadServers();
+      await loadPlugins();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -515,6 +534,7 @@ export const MCPPage: React.FC = () => {
     try {
       await api.disconnectPlugin(plugin.id);
       await loadServers();
+      await loadPlugins(); // refresh badges (apiKey state and connected state) after connect/disconnect
       if (selectedServer === plugin.name) {
         setSelectedServer(null);
         setSelectedTool(null);
@@ -539,7 +559,7 @@ export const MCPPage: React.FC = () => {
           <h2 className="text-sm font-bold text-gray-200">MCP Servers</h2>
           <div className="flex items-center gap-1">
             <button
-              onClick={async () => { await api?.reloadPlugins(); await loadPlugins(); await loadServers(); }}
+              onClick={loadServers}
               title="Refresh"
               className="p-1 text-gray-500 hover:text-gray-300 rounded transition-colors"
             >
@@ -581,6 +601,8 @@ export const MCPPage: React.FC = () => {
             onCancel={() => setShowAddForm(false)}
           />
         )}
+
+        {/* No inline auth panel needed — OAuth opens BrowserWindow directly */}
 
         {error && (
           <div className="mx-3 mt-2 p-2 text-xs text-red-400 bg-red-950/40 border border-red-800 rounded flex items-center gap-1">
@@ -638,6 +660,16 @@ export const MCPPage: React.FC = () => {
                       {plugin.role === "os" && (
                         <span className="flex-shrink-0 flex items-center gap-0.5 px-1 py-0.5 text-xs bg-amber-900/40 text-amber-400 border border-amber-800/50 rounded">
                           <HardDrive size={9} /> OS
+                        </span>
+                      )}
+                      {plugin.oauthRequired && (
+                        <span className="flex-shrink-0 flex items-center gap-0.5 px-1 py-0.5 text-xs bg-rose-900/40 text-rose-400 border border-rose-800/50 rounded" title="Requires OAuth sign-in before connecting">
+                          <Lock size={9} /> Auth
+                        </span>
+                      )}
+                      {plugin.apiKey && !connected && (
+                        <span className="flex-shrink-0 flex items-center gap-0.5 px-1 py-0.5 text-xs bg-emerald-900/40 text-emerald-400 border border-emerald-800/50 rounded" title="Token stored — click Connect to authenticate">
+                          <CheckCircle size={9} /> Saved
                         </span>
                       )}
                     </div>

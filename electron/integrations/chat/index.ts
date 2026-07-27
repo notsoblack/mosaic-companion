@@ -2,6 +2,7 @@ import { app, ipcMain, IpcMainInvokeEvent, BrowserWindow } from "electron";
 import fs from "fs";
 import path from "path";
 import { ChatClient } from "./client";
+import { initChat as initBuzzBridge, getBuzzBridge } from "./buzz-bridge";
 import {
   startAgentInRoom,
   stopAgentInRoom,
@@ -26,16 +27,12 @@ function readSettings(): ChatSettings {
   try {
     const p = getSettingsPath();
     if (fs.existsSync(p)) {
-      const s = JSON.parse(fs.readFileSync(p, "utf8")) as ChatSettings;
-      // Migrate stale localhost default to the real server
-      if (s.serverUrl === "ws://localhost:4242") {
-        s.serverUrl = "wss://agents-chat.hyperpg.site";
-        writeSettings(s);
-      }
-      return s;
+      const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as ChatSettings;
+      if (!parsed.username?.trim()) parsed.username = "Mauricio P";
+      return parsed;
     }
   } catch {}
-  return { serverUrl: "wss://agents-chat.hyperpg.site", username: "" };
+  return { serverUrl: "ws://localhost:4242", username: "Mauricio P" };
 }
 
 function writeSettings(s: ChatSettings): void {
@@ -63,7 +60,6 @@ function writeAssignments(a: RoomAgentAssignments): void {
 let mainWindow: BrowserWindow | null = null;
 let chatClient: ChatClient | null = null;
 let connectionStatus: "disconnected" | "connecting" | "connected" = "disconnected";
-let myMemberId: string | null = null;
 
 function push(channel: string, data?: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -72,21 +68,13 @@ function push(channel: string, data?: unknown): void {
 }
 
 function setupClientListeners(client: ChatClient): void {
-  client.on("auth-ok", (msg: { type: "auth-ok"; memberId: string; token?: string }) => {
-    myMemberId = msg.memberId;
+  client.on("auth-ok", () => {
     connectionStatus = "connected";
-    if (msg.token) {
-      chatClient?.setToken(msg.token);
-      const s = readSettings();
-      s.token = msg.token;
-      writeSettings(s);
-    }
-    push("connection-changed", { status: "connected", memberId: msg.memberId });
+    push("connection-changed", { status: "connected" });
   });
 
   client.on("disconnected", () => {
     if (connectionStatus !== "disconnected") {
-      myMemberId = null;
       connectionStatus = "connecting";
       push("connection-changed", { status: "connecting" });
     }
@@ -108,9 +96,6 @@ function setupClientListeners(client: ChatClient): void {
         break;
       case "left":
         push("left", { roomId: msg.roomId });
-        break;
-      case "room-deleted":
-        push("room-deleted", { roomId: msg.roomId });
         break;
       case "message":
         push("message", msg.message);
@@ -157,7 +142,7 @@ export function initChat(): void {
   );
 
   // Status
-  ipcMain.handle("chat:status", async () => ({ status: connectionStatus, memberId: myMemberId }));
+  ipcMain.handle("chat:status", async () => ({ status: connectionStatus }));
 
   // Connection
   ipcMain.handle("chat:connect", async () => {
@@ -175,7 +160,6 @@ export function initChat(): void {
     chatClient = new ChatClient({
       url: settings.serverUrl,
       username: settings.username,
-      token: settings.token,
     });
     setupClientListeners(chatClient);
     chatClient.connect();
@@ -187,7 +171,6 @@ export function initChat(): void {
       chatClient.destroy();
       chatClient = null;
     }
-    myMemberId = null;
     connectionStatus = "disconnected";
     push("connection-changed", { status: "disconnected" });
     return { success: true };
@@ -220,12 +203,6 @@ export function initChat(): void {
     return { success: true };
   });
 
-  ipcMain.handle("chat:delete-room", async (_e: IpcMainInvokeEvent, roomId: string) => {
-    if (!chatClient?.isConnected()) return { success: false, error: "Not connected" };
-    chatClient.send({ type: "delete-room", roomId });
-    return { success: true };
-  });
-
   ipcMain.handle(
     "chat:send-message",
     async (_e: IpcMainInvokeEvent, roomId: string, text: string) => {
@@ -238,7 +215,7 @@ export function initChat(): void {
   // Agent assignments
   ipcMain.handle(
     "chat:assign-agent",
-    async (_e: IpcMainInvokeEvent, roomId: string, agentId: string, agentName: string) => {
+    async (_e: IpcMainInvokeEvent, roomId: string, agentId: string, agentName: string, trainingContext?: any) => {
       const settings = readSettings();
       const assignments = readAssignments();
       if (!assignments[roomId]) assignments[roomId] = [];
@@ -247,7 +224,7 @@ export function initChat(): void {
       }
       writeAssignments(assignments);
       if (settings.serverUrl) {
-        startAgentInRoom(settings.serverUrl, roomId, agentId, agentName);
+        startAgentInRoom(settings.serverUrl, roomId, agentId, agentName, trainingContext);
       }
       return { success: true };
     },
@@ -273,6 +250,41 @@ export function initChat(): void {
       return listAgentsInRoom(roomId);
     },
   );
+
+  // ── Buzz Bridge IPC handlers ────────────────────────────────────────────────
+  ipcMain.handle("buzz:status", async () => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.status();
+  });
+
+  ipcMain.handle("buzz:enable", async (_e: IpcMainInvokeEvent, enabled: boolean) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.enable(enabled);
+  });
+
+  ipcMain.handle("buzz:set-relay", async (_e: IpcMainInvokeEvent, url: string) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.setRelay(url);
+  });
+
+  ipcMain.handle("buzz:get-config", async () => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return bridge.getConfig();
+  });
+
+  ipcMain.handle("buzz:dispatch", async (_e: IpcMainInvokeEvent, agentId: string, task: string, channelTag: string) => {
+    try {
+      const bridge = getBuzzBridge() || initBuzzBridge();
+      return await bridge.dispatchAgentJob(agentId, task, channelTag);
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle("buzz:import-key", async (_e: IpcMainInvokeEvent, nsec: string) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    return await bridge.importKey(nsec);
+  });
 }
 
 export function stopChat(): void {

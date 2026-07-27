@@ -76,13 +76,33 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
+    // Fix: migrate old ollama.com URLs to api.ollama.com for ollama-cloud provider
+    let baseUrl = config.baseUrl || "https://api.openai.com";
+    if (config.provider === "ollama-cloud" && baseUrl.includes("ollama.com") && !baseUrl.includes("api.ollama.com")) {
+      console.log('[AIService.sendToOpenAI] Migrating old baseUrl:', baseUrl, '→ https://api.ollama.com');
+      baseUrl = "https://api.ollama.com";
+    }
+
+    // For Hermes API Server, default the key if empty
+    const actualApiKey =
+      config.provider === "hermes-api" && !config.apiKey?.trim()
+        ? "mosaic-hermes-2025"
+        : config.apiKey?.trim() || config.apiKey;
+
+    // AGGRESSIVE FIX: Final safety check - rewrite ollama.com URLs at request time
+    let finalBaseUrl = baseUrl;
+    if (finalBaseUrl.includes("ollama.com") && !finalBaseUrl.includes("api.ollama.com")) {
+      console.warn(`[AIService.sendToOpenAI] FINAL SAFETY: Rewriting ${finalBaseUrl} → https://api.ollama.com`);
+      finalBaseUrl = "https://api.ollama.com";
+    }
+
     const response = await fetch(
-      `${config.baseUrl || "https://api.openai.com"}/v1/chat/completions`,
+      `${finalBaseUrl}/v1/chat/completions`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${actualApiKey}`,
         },
         body: JSON.stringify({
           model: config.model,
@@ -98,8 +118,15 @@ export class AIService {
     );
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || "OpenAI API error");
+      const error = await response.text().catch(() => null);
+      let errorMessage = "OpenAI API error";
+      try {
+        const parsed = error ? JSON.parse(error) : null;
+        errorMessage = parsed?.error?.message || error || `HTTP ${response.status}`;
+      } catch {
+        errorMessage = error || `HTTP ${response.status}`;
+      }
+      throw new Error(errorMessage);
     }
 
     if (callbacks && response.body) {
@@ -184,7 +211,14 @@ export class AIService {
     );
 
     if (!response.ok) {
-      throw new Error("Ollama connection error - is Ollama running?");
+      let errBody = "";
+      try {
+        const errData = await response.clone().json();
+        errBody = errData.error || JSON.stringify(errData);
+      } catch { /* not JSON */ }
+      throw new Error(
+        `Ollama error (model: ${config.model}): ${errBody || response.statusText || "is Ollama running?"}`
+      );
     }
 
     if (callbacks && response.body) {
@@ -230,6 +264,8 @@ export class AIService {
               token = parsed.choices?.[0]?.delta?.content || "";
             } else if (provider === "gemini") {
               token = parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            } else if (provider === "hermes-api") {
+              token = parsed.choices?.[0]?.delta?.content || "";
             }
 
             if (token) {
@@ -286,6 +322,87 @@ export class AIService {
       callbacks.onError(error as Error);
       throw error;
     }
+  }
+
+  // Send message to Hermes (OpenAI-compatible endpoint)
+  static async sendToHermes(
+    config: AIAgentConfig,
+    messages: ChatMessage[],
+    callbacks?: StreamCallbacks
+  ): Promise<string> {
+    console.log('[AIService.sendToHermes] start — model:', config.model, 'baseUrl:', config.baseUrl || 'http://localhost:8642');
+    const baseUrl = (config.baseUrl || "http://localhost:8642").replace(/\/$/, "");
+    // Default port changed from 3000 (old dev default) to 8642 (production standalone API server)
+    const url = `${baseUrl}/v1/chat/completions`;
+    // The Hermes standalone API server uses a Bearer token for auth.
+    // Default key from run_api_server_standalone.py is "mosaic-hermes-2025".
+    const apiKey = (config.apiKey && config.apiKey.trim()) ? config.apiKey.trim() : "mosaic-hermes-2025";
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: config.model || "default",
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        stream: !!callbacks,
+        max_tokens: config.maxTokens || 4096,
+        temperature: config.temperature || 0.7,
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (!response.ok) {
+      const txt = await response.text();
+      console.error('[AIService.sendToHermes] HTTP error:', response.status, txt.slice(0, 200));
+      throw new Error(`Hermes error ${response.status}: ${txt}`);
+    }
+
+    if (callbacks && response.body) {
+      const result = await this.handleStream(response.body, callbacks, "openai");
+      console.log('[AIService.sendToHermes] streaming complete — length:', result.length);
+      return result;
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    console.log('[AIService.sendToHermes] non-streaming response — length:', content.length);
+    return content;
+  }
+
+  /* ── Hermes AIM (HyperCycle Node) ── */
+  static async sendToHermesAIM(
+    config: AIAgentConfig,
+    messages: ChatMessage[],
+    callbacks?: StreamCallbacks,
+  ): Promise<string> {
+    const url = `${config.baseUrl || "http://127.0.0.1:9000"}/chat`;
+    const lastUser = messages.filter((m) => m.role === "user").pop()?.content || "";
+    const system = messages.find((m) => m.role === "system")?.content || "";
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: lastUser, system_prompt: system }),
+      signal: AbortSignal.timeout(120000),
+    });
+    if (!response.ok) {
+      throw new Error(`Hermes AIM error ${response.status}: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const content = data.response ?? "";
+
+    if (callbacks && content) {
+      // emulate streaming by yielding the full response as one token
+      for (const token of content.split(/(\s+)/)) {
+        if (token) callbacks.onToken(token);
+      }
+      callbacks.onComplete(content);
+      return content;
+    }
+
+    return content;
   }
 
   /** Hypercycle: GET /nonce → POST /api/aim/{index}/request → POST /stream with `{ token }`. */
@@ -381,20 +498,117 @@ export class AIService {
     messages: ChatMessage[],
     callbacks?: StreamCallbacks
   ): Promise<string> {
+    // AGGRESSIVE FIX: Any agent with ollama.com URLs gets migrated immediately
+    // This catches agents saved with wrong baseUrl regardless of provider
+    if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
+      console.log(`[AIService] Force-migrating ${config.name} baseUrl: ${config.baseUrl} → https://api.ollama.com`);
+      config = { ...config, baseUrl: "https://api.ollama.com" };
+    }
+
+    // ─── Skill Injection (v2.6) ─────────────────────────────────────────────
+    // If the agent has skills[] configured, load them from ~/.hermes/skills/
+    // or Mosaic Vault, and inject their content as a system prompt before
+    // the first message. Vault fallback runs in the main process via IPC.
+    // ─────────────────────────────────────────────────────────────────────
+    let enrichedMessages = messages;
+    if (config.skills && config.skills.length > 0) {
+      try {
+        // Use main-process IPC to build the system prompt (fs only works in Node)
+        const result = await (window as any).electronAPI?.skills?.buildSystemPrompt?.({
+          baseSystemPrompt: "",
+          skillNames: config.skills,
+        });
+
+        if (!result || result.loadedSkills.length === 0) {
+          // IPC not available or no skills loaded — fallback to local (renderer-safe, no fs)
+          console.warn(`[AIService] IPC skill build failed or returned empty for ${config.name}, using local fallback`);
+        } else {
+          // Prepend a system message containing all loaded skill content
+          const skillSystemMsg: ChatMessage = {
+            id: `skill-system-${Date.now()}`,
+            role: "system",
+            content: result.systemPrompt,
+            timestamp: Date.now(),
+            agentId: config.id,
+          };
+          // Find if there's already a system message
+          const firstSystemIdx = messages.findIndex((m) => m.role === "system");
+          if (firstSystemIdx !== -1) {
+            // Prepend skills BEFORE the existing system message
+            enrichedMessages = [
+              skillSystemMsg,
+              ...messages.slice(0, firstSystemIdx),
+              {
+                ...messages[firstSystemIdx],
+                content: messages[firstSystemIdx].content + "\n\n" + result.systemPrompt,
+              },
+              ...messages.slice(firstSystemIdx + 1),
+            ];
+          } else {
+            // Prepend as the first message
+            enrichedMessages = [skillSystemMsg, ...messages];
+          }
+          console.log(`[AIService] Skills injected for ${config.name}: ${result.loadedSkills.join(", ")} (${result.totalTokens}T)`);
+        }
+        if (result?.failedSkills?.length > 0) {
+          console.warn(`[AIService] Failed to load skills for ${config.name}: ${result.failedSkills.join(", ")}`);
+        }
+      } catch (e) {
+        console.error("[AIService] Skill injection failed:", e);
+        // Continue without skills — don't break the chat
+      }
+    }
+
     switch (config.provider) {
       case "claude":
-        return this.sendToClaude(config, messages, callbacks);
+        return this.sendToClaude(config, enrichedMessages, callbacks);
       case "openai":
-        return this.sendToOpenAI(config, messages, callbacks);
-      case "gemini":
-        return this.sendToGemini(config, messages, callbacks);
-      case "ollama":
-        return this.sendToOllama(config, messages, callbacks);
       case "custom":
-        // Custom endpoints assume OpenAI-compatible API
-        return this.sendToOpenAI(config, messages, callbacks);
+        // AGGRESSIVE: Also check for ollama.com URLs in openai/custom providers
+        if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
+          console.log(`[AIService] Re-routing ${config.provider} agent with ollama.com URL to ollama-cloud handler`);
+          const fixedBaseUrl = "https://api.ollama.com";
+          return this.sendToOpenAI(
+            { ...config, baseUrl: fixedBaseUrl, provider: "ollama-cloud" },
+            enrichedMessages,
+            callbacks,
+          );
+        }
+        return this.sendToOpenAI(config, enrichedMessages, callbacks);
+      case "gemini":
+        return this.sendToGemini(config, enrichedMessages, callbacks);
+      case "ollama":
+        return this.sendToOllama(config, enrichedMessages, callbacks);
+      case "ollama-cloud":
+        // Ollama Cloud uses OpenAI-compatible endpoint at api.ollama.com
+        // Fix: migrate any saved agents that have the old/incorrect baseUrl
+        const ollamaCloudBaseUrl = config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")
+          ? "https://api.ollama.com"
+          : (config.baseUrl || "https://api.ollama.com");
+        return this.sendToOpenAI(
+          { ...config, baseUrl: ollamaCloudBaseUrl },
+          enrichedMessages,
+          callbacks,
+        );
       case "hypercycle":
-        return this.sendToHypercycle(config, messages, callbacks);
+        return this.sendToHypercycle(config, enrichedMessages, callbacks);
+      case "hermes":
+        return this.sendToHermes(config, enrichedMessages, callbacks);
+      case "hermes-aim":
+        return this.sendToHermesAIM(config, enrichedMessages, callbacks);
+      case "hermes-api":
+        // Hermes API Server — OpenAI-compatible with full tool loop
+        // AGGRESSIVE: Check for ollama.com URLs
+        if (config.baseUrl?.includes("ollama.com") && !config.baseUrl?.includes("api.ollama.com")) {
+          console.log(`[AIService] Re-routing hermes-api agent with ollama.com URL to ollama-cloud handler`);
+          const fixedBaseUrl = "https://api.ollama.com";
+          return this.sendToOpenAI(
+            { ...config, baseUrl: fixedBaseUrl, provider: "ollama-cloud" },
+            enrichedMessages,
+            callbacks,
+          );
+        }
+        return this.sendToOpenAI(config, enrichedMessages, callbacks);
       default:
         throw new Error(`Unknown provider: ${config.provider}`);
     }
@@ -405,6 +619,31 @@ export class AIService {
     config: AIAgentConfig
   ): Promise<{ success: boolean; message: string }> {
     try {
+      if (config.provider === "hermes" || config.provider === "hermes-aim" || config.provider === "hermes-api") {
+        const defaultPort = config.provider === "hermes-aim" ? "9000" : config.provider === "hermes-api" ? "8000" : "8642";
+        const baseUrl = ((config.baseUrl || `http://localhost:${defaultPort}`).trim()).replace(/\/$/, "");
+        const healthUrl = `${baseUrl}/health`;
+        try {
+          const r = await fetch(healthUrl, { signal: AbortSignal.timeout(5000) });
+          if (!r.ok) {
+            return {
+              success: false,
+              message: `Hermes health check failed (${r.status}): ${await r.text()}`,
+            };
+          }
+          const data = await r.json() as { status?: string; version?: string; provider?: string; model?: string };
+          return {
+            success: true,
+            message: `Hermes connected: status=${data.status ?? "unknown"}, version=${data.version ?? "unknown"}, provider=${data.provider ?? data.model ?? config.model}`,
+          };
+        } catch (e) {
+          return {
+            success: false,
+            message: `Cannot reach Hermes at ${healthUrl}. Is Hermes running? ${e instanceof Error ? e.message : String(e)}`,
+          };
+        }
+      }
+
       if (config.provider === "hypercycle") {
         const baseUrl = config.baseUrl?.trim();
         if (!baseUrl) {

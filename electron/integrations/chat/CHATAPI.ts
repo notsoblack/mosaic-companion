@@ -29,7 +29,7 @@ export const chatAPI = {
   disconnect: (): Promise<{ success: boolean }> =>
     ipcRenderer.invoke("chat:disconnect"),
 
-  status: (): Promise<{ status: string; memberId?: string }> =>
+  status: (): Promise<{ status: string }> =>
     ipcRenderer.invoke("chat:status"),
 
   // ===========================================================================
@@ -48,9 +48,6 @@ export const chatAPI = {
   leaveRoom: (roomId: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke("chat:leave-room", roomId),
 
-  deleteRoom: (roomId: string): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke("chat:delete-room", roomId),
-
   sendMessage: (
     roomId: string,
     text: string,
@@ -65,8 +62,9 @@ export const chatAPI = {
     roomId: string,
     agentId: string,
     agentName: string,
+    trainingContext?: { skillName: string; systemPrompt?: string },
   ): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke("chat:assign-agent", roomId, agentId, agentName),
+    ipcRenderer.invoke("chat:assign-agent", roomId, agentId, agentName, trainingContext),
 
   removeAgent: (
     roomId: string,
@@ -81,8 +79,8 @@ export const chatAPI = {
   // Push events (server → renderer)
   // ===========================================================================
 
-  onConnectionChanged: (cb: (data: { status: string; memberId?: string }) => void) => {
-    const listener = (_e: IpcRendererEvent, data: { status: string; memberId?: string }) => cb(data);
+  onConnectionChanged: (cb: (data: { status: string }) => void) => {
+    const listener = (_e: IpcRendererEvent, data: { status: string }) => cb(data);
     ipcRenderer.on("chat:connection-changed", listener);
     return () => ipcRenderer.removeListener("chat:connection-changed", listener);
   },
@@ -112,12 +110,6 @@ export const chatAPI = {
     const listener = (_e: IpcRendererEvent, data: { roomId: string }) => cb(data);
     ipcRenderer.on("chat:left", listener);
     return () => ipcRenderer.removeListener("chat:left", listener);
-  },
-
-  onRoomDeleted: (cb: (data: { roomId: string }) => void) => {
-    const listener = (_e: IpcRendererEvent, data: { roomId: string }) => cb(data);
-    ipcRenderer.on("chat:room-deleted", listener);
-    return () => ipcRenderer.removeListener("chat:room-deleted", listener);
   },
 
   onMessage: (cb: (message: StoredMessage) => void) => {
@@ -151,4 +143,21 @@ export const chatAPI = {
     ipcRenderer.on("chat:error", listener);
     return () => ipcRenderer.removeListener("chat:error", listener);
   },
+
+  // ===========================================================================
+  // Buzz Bridge
+  // ===========================================================================
+
+  buzzStatus: () => ipcRenderer.invoke("buzz:status"),
+
+  buzzEnable: (enabled: boolean) => ipcRenderer.invoke("buzz:enable", enabled),
+
+  buzzSetRelay: (url: string) => ipcRenderer.invoke("buzz:set-relay", url),
+
+  buzzGetConfig: () => ipcRenderer.invoke("buzz:get-config"),
+
+  buzzDispatch: (agentId: string, task: string, channelTag: string) =>
+    ipcRenderer.invoke("buzz:dispatch", agentId, task, channelTag),
+
+  buzzImportKey: (nsec: string) => ipcRenderer.invoke("buzz:import-key", nsec),
 };

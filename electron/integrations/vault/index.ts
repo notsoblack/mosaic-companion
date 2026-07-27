@@ -265,7 +265,7 @@ export function getBoxContent(boxId: string): VaultEntry[] {
 /** Add a new entry to a box. */
 export function addEntry(
   boxId: string,
-  input: { content: string; label?: string },
+  input: { content: string; label?: string; metadata?: VaultEntry["metadata"] },
 ): { success: boolean; entry?: VaultEntry; error?: string } {
   if (!input.content || input.content.trim().length === 0) {
     return { success: false, error: "Entry content cannot be empty" };
@@ -277,6 +277,7 @@ export function addEntry(
     id: `entry-${now}`,
     label: input.label?.trim() || undefined,
     content: input.content.trim(),
+    metadata: input.metadata,
     createdAt: now,
     updatedAt: now,
   };
@@ -290,7 +291,7 @@ export function addEntry(
 export function updateEntry(
   boxId: string,
   entryId: string,
-  updates: { content?: string; label?: string },
+  updates: { content?: string; label?: string; metadata?: VaultEntry["metadata"] },
 ): { success: boolean; entry?: VaultEntry; error?: string } {
   const boxContent = loadBoxContent(boxId);
   const index = boxContent.entries.findIndex((e) => e.id === entryId);

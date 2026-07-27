@@ -145,6 +145,74 @@ contextBridge.exposeInMainWorld("electronAPI", {
     callFunction: (toolId: string, functionName: string, args: Record<string, unknown>) =>
       ipcRenderer.invoke("toolSandbox:callFunction", toolId, functionName, args),
   },
+  // Stargate Agent-as-Tool integration
+  stargate: {
+    registerAgentTool: (manifest: Record<string, unknown>) =>
+      ipcRenderer.invoke("stargate:registerAgentTool", manifest),
+    unregisterAgentTool: (toolId: string) =>
+      ipcRenderer.invoke("stargate:unregisterAgentTool", toolId),
+    listAgentTools: () =>
+      ipcRenderer.invoke("stargate:listAgentTools"),
+    registerAIM: (config: Record<string, unknown>) =>
+      ipcRenderer.invoke("stargate:registerAIM", config),
+    unregisterAIM: (serverName: string) =>
+      ipcRenderer.invoke("stargate:unregisterAIM", serverName),
+    dispatchPrompt: (nodeId: string, prompt: string) =>
+      ipcRenderer.invoke("stargate:dispatchPrompt", nodeId, prompt),
+    runJob: (jobType: string, params: Record<string, unknown>) =>
+      ipcRenderer.invoke("stargate:runJob", jobType, params),
+    // IDE Agent Forge (P1)
+    testAgentCode: (code: string, templateId: string) =>
+      ipcRenderer.invoke("stargate:testAgentCode", code, templateId),
+    deployAgentCode: (code: string, config: Record<string, unknown>) =>
+      ipcRenderer.invoke("stargate:deployAgentCode", code, config),
+    // IDE Agent Forge (P2) — lifecycle
+    listDeployedAgents: () =>
+      ipcRenderer.invoke("stargate:forge:listDeployed"),
+    listRunningAgents: () =>
+      ipcRenderer.invoke("stargate:forge:listRunning"),
+    stopAgent: (agentId: string) =>
+      ipcRenderer.invoke("stargate:forge:stopAgent", agentId),
+    // v2.2: Health Monitoring
+    enableHealthCheck: (agentId: string, intervalMs?: number, maxRestarts?: number) =>
+      ipcRenderer.invoke("stargate:forge:enableHealthCheck", agentId, intervalMs, maxRestarts),
+    disableHealthCheck: (agentId: string) =>
+      ipcRenderer.invoke("stargate:forge:disableHealthCheck", agentId),
+    isHealthy: (agentId: string) =>
+      ipcRenderer.invoke("stargate:forge:isHealthy", agentId),
+    // v2.1: Cross-node Deploy
+    deployAgentToNode: (code: string, config: Record<string, unknown>) =>
+      ipcRenderer.invoke("stargate:deployAgentToNode", code, config),
+    // Aimifier: Hermes → HyperCycle AIM Pipeline
+    aimify: {
+      exec: (command: string, args: string[], options?: { cwd?: string; timeout?: number }) =>
+        ipcRenderer.invoke("aimify:exec", command, args, options),
+      writeFile: (filePath: string, content: string) =>
+        ipcRenderer.invoke("aimify:write-file", filePath, content),
+      readFile: (filePath: string) =>
+        ipcRenderer.invoke("aimify:read-file", filePath),
+    },
+    // Stargate Tilling — Community Node Factory Compute Service
+    tilling: {
+      provision: (payload: { licenseId: string; ownerWallet: string; network: string; pricingModel: string; durationDays: number }) =>
+        ipcRenderer.invoke("stargate:tilling:provision", payload),
+      stop: (tenantId: string) =>
+        ipcRenderer.invoke("stargate:tilling:stop", tenantId),
+      getSessions: (wallet?: string) =>
+        ipcRenderer.invoke("stargate:tilling:getSessions", wallet),
+      resume: (tenantId: string) =>
+        ipcRenderer.invoke("stargate:tilling:resume", tenantId),
+      lock: (tenantId: string, locked: boolean) =>
+        ipcRenderer.invoke("stargate:tilling:lock", tenantId, locked),
+      // ── Tiller management (non-custodial signing flow) ──
+      create: (tenantId: string) =>
+        ipcRenderer.invoke("stargate:tilling:create", tenantId),
+      getMessage: (tenantId: string, number: number, license: string, chypc: string) =>
+        ipcRenderer.invoke("stargate:tilling:getMessage", tenantId, number, license, chypc),
+      update: (tenantId: string, payload: any) =>
+        ipcRenderer.invoke("stargate:tilling:update", tenantId, payload),
+    },
+  },
   // Chronicle (tool activity log)
   chronicle: {
     read: (toolId: string, query?: Record<string, unknown>) =>
@@ -156,6 +224,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   dialog: {
     openFile: (options?: { filters?: Array<{ name: string; extensions: string[] }> }) =>
       ipcRenderer.invoke("dialog:open-file", options),
+    openDirectory: () =>
+      ipcRenderer.invoke("dialog:open-directory"),
+  },
+  // Node Factory Tracker — CBNO license fleet health monitoring
+  nodeFactory: {
+    loadJsonFile: (filePath: string) =>
+      ipcRenderer.invoke("nodeFactory:loadJsonFile", filePath),
+    checkLicense: (licenseId: string, apiBase: string) =>
+      ipcRenderer.invoke("nodeFactory:checkLicense", licenseId, apiBase),
   },
   // Window controls (for custom title bar)
   window: {
@@ -163,6 +240,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     maximize: () => ipcRenderer.invoke("window:maximize"),
     close: () => ipcRenderer.invoke("window:close"),
     isMaximized: () => ipcRenderer.invoke("window:is-maximized"),
+    // HyperCycle Node status (from community installer)
+    getNodeStatus: () => ipcRenderer.invoke("get-node-status"),
+    openExternal: (url: string) => ipcRenderer.send("open-external", url),
   },
   // Web3 wallet & address book bridge
   trading: {
@@ -235,36 +315,35 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getStatus: () => ipcRenderer.invoke("hyperinsight:get-status"),
     ensureKey: () => ipcRenderer.invoke("hyperinsight:ensure-key"),
     resetKey: () => ipcRenderer.invoke("hyperinsight:reset-key"),
+    // AIM Discovery
     getAims: () => ipcRenderer.invoke("hyperinsight:get-aims"),
+    getDiscover: (params?: any) => ipcRenderer.invoke("hyperinsight:get-discover", params),
+    getCatalog: () => ipcRenderer.invoke("hyperinsight:get-catalog"),
     getLeaderboard: () => ipcRenderer.invoke("hyperinsight:get-leaderboard"),
-    getNodes: (params?: any) => ipcRenderer.invoke("hyperinsight:get-nodes", params),
-    getNodeDetail: (license: string) => ipcRenderer.invoke("hyperinsight:get-node-detail", license),
-    getNodeProfile: (license: number | string) => ipcRenderer.invoke("hyperinsight:get-node-profile", license),
-    getAimManifest: (license: string, aimName: string) => ipcRenderer.invoke("hyperinsight:get-node-aim-manifest", license, aimName),
-    getNetworkStats: () => ipcRenderer.invoke("hyperinsight:get-network-stats"),
-    getNetworkHistory: () => ipcRenderer.invoke("hyperinsight:get-network-history"),
-    getAimStats: (name: string, range?: string) => ipcRenderer.invoke("hyperinsight:get-aim-stats", name, range),
-    getAimStatsCurrent: (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-stats-current", name),
+    compareAims: (names: string[]) => ipcRenderer.invoke("hyperinsight:compare-aims", names),
+    // AIM Details
+    getAimProfile: (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-profile", name),
     getAimDetails: (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-details", name),
+    getAimCapabilities: (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-capabilities", name),
+    getAimNodes: (name: string, params?: any) => ipcRenderer.invoke("hyperinsight:get-aim-nodes", name, params),
     getAimReleases: (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-releases", name),
     getAimReleaseDetail: (name: string, tag: string) => ipcRenderer.invoke("hyperinsight:get-aim-release-detail", name, tag),
+    getAimReleaseRequirements: (name: string, tag: string) => ipcRenderer.invoke("hyperinsight:get-aim-release-requirements", name, tag),
+    // Stats
+    getAimStats: (name: string, range?: string) => ipcRenderer.invoke("hyperinsight:get-aim-stats", name, range),
+    getAimStatsCurrent: (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-stats-current", name),
+    // Nodes
+    getNodes: (params?: any) => ipcRenderer.invoke("hyperinsight:get-nodes", params),
+    getNodeDetail: (license: string) => ipcRenderer.invoke("hyperinsight:get-node-detail", license),
+    getNodeCapabilities: (license: string, includeDeployed?: boolean) => ipcRenderer.invoke("hyperinsight:get-node-capabilities", license, includeDeployed),
+    getAimManifest: (license: string, aimName: string) => ipcRenderer.invoke("hyperinsight:get-node-aim-manifest", license, aimName),
+    // Network
+    getNetworkStats: () => ipcRenderer.invoke("hyperinsight:get-network-stats"),
+    getNetworkHistory: () => ipcRenderer.invoke("hyperinsight:get-network-history"),
+    getNetworkStatus: () => ipcRenderer.invoke("hyperinsight:get-network-status"),
+    getNetworkRegions: () => ipcRenderer.invoke("hyperinsight:get-network-regions"),
+    // Storage
     saveGeneratedImage: (base64Data: string) => ipcRenderer.invoke("hyperinsight:save-generated-image", base64Data),
-    // Stage 8A: AIM profile endpoints
-    getAimProfile:  (name: string) => ipcRenderer.invoke("hyperinsight:get-aim-profile", name),
-    getAimNodes:    (name: string, opts?: any) => ipcRenderer.invoke("hyperinsight:get-aim-nodes", name, opts),
-    getAimBestNode: (name: string, opts?: any) => ipcRenderer.invoke("hyperinsight:get-aim-best-node", name, opts),
-    // Stage 7C: score cache access
-    getToolScore: (endpointUrl: string) => ipcRenderer.invoke("hyperinsight:get-tool-score", endpointUrl),
-    getAllToolScores: () => ipcRenderer.invoke("hyperinsight:get-all-tool-scores"),
-    getToolScoresLastUpdated: () => ipcRenderer.invoke("hyperinsight:get-tool-scores-last-updated"),
-    // Stage 8B: new endpoint bridge
-    getAimDeployments:      (aimId: number) => ipcRenderer.invoke("hyperinsight:get-aim-deployments", aimId),
-    getToolStatus:          (toolId: string) => ipcRenderer.invoke("hyperinsight:get-tool-status", toolId),
-    subscribe:              (payload: any) => ipcRenderer.invoke("hyperinsight:subscribe", payload),
-    getSubscriptions:       () => ipcRenderer.invoke("hyperinsight:get-subscriptions"),
-    unsubscribe:            (subscriptionId: string) => ipcRenderer.invoke("hyperinsight:unsubscribe", subscriptionId),
-    getVerificationHistory: (subscriptionId: string) => ipcRenderer.invoke("hyperinsight:get-verification-history", subscriptionId),
-    clearCache:             () => ipcRenderer.invoke("hyperinsight:clear-cache"),
     // AIM Nodes data
     saveNodeData: (license: string, data: any) => ipcRenderer.invoke("aimnodes:save-node-data", license, data),
     deleteNodeData: (license: string) => ipcRenderer.invoke("aimnodes:delete-node-data", license),
@@ -344,6 +423,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.invoke("vault:get-box-content", boxId),
     addEntry: (boxId: string, input: { content: string; label?: string }) =>
       ipcRenderer.invoke("vault:add-entry", boxId, input),
+    importExternalSkills: (
+      refs?: Array<{ owner: string; repo: string; branch?: string; skillPath?: string; installName?: string }>,
+      targetBoxId?: string,
+    ) => ipcRenderer.invoke("vault:import-external-skills", refs, targetBoxId),
     updateEntry: (
       boxId: string,
       entryId: string,
@@ -352,6 +435,101 @@ contextBridge.exposeInMainWorld("electronAPI", {
     deleteEntry: (boxId: string, entryId: string) =>
       ipcRenderer.invoke("vault:delete-entry", boxId, entryId),
   },
+  // Fleet mesh dispatch (Tailscale SSH)
+  mesh: {
+    dispatch: (payload: { host: string; user: string; command: string; timeout?: number }) =>
+      ipcRenderer.invoke("mesh:dispatch", payload),
+  },
+  // Skill delivery pipeline (sync Hermes skills to fleet nodes)
+  skills: {
+    buildSystemPrompt: (payload: { baseSystemPrompt?: string; skillNames: string[]; includeReferences?: boolean; maxTokens?: number; dialOverrides?: Record<string, number> }) =>
+      ipcRenderer.invoke("skill:buildSystemPrompt", payload),
+    syncToNode: (payload: { skillNames: string[]; nodeId: string; nodeHost?: string }) =>
+      ipcRenderer.invoke("stargate:skill:syncToNode", payload),
+  },
+  // Krea AI Image Generation
+  krea: {
+    generate: (payload: { prompt: string; aspectRatio?: string; creativity?: number; negativePrompt?: string; styleReference?: string; moodboard?: string[]; numImages?: number; seed?: number; outputFormat?: string }) =>
+      ipcRenderer.invoke("krea:generate", payload),
+    checkStatus: (generationId: string) =>
+      ipcRenderer.invoke("krea:checkStatus", generationId),
+    downloadImage: (imageUrl: string, destPath: string) =>
+      ipcRenderer.invoke("krea:downloadImage", imageUrl, destPath),
+  },
+  // ─── Cardano / Tokeo Wallet Bridge ───
+  cardano: {
+    // Tokeo Mobile (QR-based)
+    tokeoDetect: () =>
+      ipcRenderer.invoke("cardano:tokeoDetect"),
+    tokeoConnect: () =>
+      ipcRenderer.invoke("cardano:tokeoConnect"),
+    tokeoQRPairing: (policyIds?: string[]) =>
+      ipcRenderer.invoke("cardano:tokeoQRPairing", policyIds),
+    tokeoCheckQR: (sessionId?: string) =>
+      ipcRenderer.invoke("cardano:tokeoCheckQR", sessionId),
+    tokeoVerifyCollection: (policyIds: string[], strict?: boolean) =>
+      ipcRenderer.invoke("cardano:tokeoVerifyCollection", policyIds, strict),
+    tokeoCancelQR: (sessionId?: string) =>
+      ipcRenderer.invoke("cardano:tokeoCancelQR", sessionId),
+    tokeoStatus: () =>
+      ipcRenderer.invoke("cardano:tokeoStatus"),
+    tokeoDisconnect: () =>
+      ipcRenderer.invoke("cardano:tokeoDisconnect"),
+
+    // CIP-30 Browser Wallets (Lace, Eternl, Nami, etc.) via WebView Bridge
+    detectWallets: () =>
+      ipcRenderer.invoke("cardano:detectWallets"),
+    connectWallet: (walletKey: string) =>
+      ipcRenderer.invoke("cardano:connectWallet", walletKey),
+    getWalletAssets: () =>
+      ipcRenderer.invoke("cardano:getWalletAssets"),
+    signTx: (walletKey: string, txHex: string, partialSign?: boolean) =>
+      ipcRenderer.invoke("cardano:signTx", walletKey, txHex, partialSign),
+    getBridgeStatus: () =>
+      ipcRenderer.invoke("cardano:getBridgeStatus"),
+    disconnectWallet: () =>
+      ipcRenderer.invoke("cardano:disconnectWallet"),
+  },
+  // ─── Hermes Dashboard — kanban UI lifecycle ───
+  hermes: {
+    startDashboard: (port?: number) =>
+      ipcRenderer.invoke("hermes:start-dashboard", port),
+    stopDashboard: () => ipcRenderer.invoke("hermes:stop-dashboard"),
+    dashboardStatus: () => ipcRenderer.invoke("hermes:dashboard-status"),
+  },
+  midnightCity: {
+    connect: (params: { agentId: string }) =>
+      ipcRenderer.invoke("midnight:connect", params),
+    disconnect: (params?: { force?: boolean }) =>
+      ipcRenderer.invoke("midnight:disconnect", params),
+    getStatus: () =>
+      ipcRenderer.invoke("midnight:getStatus"),
+    getLogs: () =>
+      ipcRenderer.invoke("midnight:getLogs"),
+    setLock: (locked: boolean) =>
+      ipcRenderer.invoke("midnight:setLock", locked),
+    call: (params: { endpoint: string; method: "GET" | "POST"; body?: any }) =>
+      ipcRenderer.invoke("midnight:apiCall", params),
+    readScript: (filePath: string) =>
+      ipcRenderer.invoke("midnight:readScript", filePath),
+    writeScript: (params: { path: string; content: string }) =>
+      ipcRenderer.invoke("midnight:writeScript", params),
+    restartMiner: () =>
+      ipcRenderer.invoke("midnight:restartMiner"),
+    deployAgent: (params: { name: string; profession: string; baseImage: string }) =>
+      ipcRenderer.invoke("midnight:deployAgent", params),
+  },
+
+  // ── AXI Tool Forge API ──
+  axiCatalog: () => ipcRenderer.invoke("axi:catalog"),
+  axiStatus: (args?: { node?: string; full?: boolean }) => ipcRenderer.invoke("axi:status", args),
+  axiSpoStatus: () => ipcRenderer.invoke("axi:spo-status"),
+  axiDeploy: (args: { module: string; node?: string }) => ipcRenderer.invoke("axi:deploy", args),
+  axiAimify: (args: { tool: string }) => ipcRenderer.invoke("axi:aimify", args),
+  axiForgeHistory: (args?: { limit?: number }) => ipcRenderer.invoke("axi:forge-history", args),
+  axiFleetSnapshot: (args?: { fresh?: boolean }) => ipcRenderer.invoke("axi:fleet-snapshot", args),
+  axiAllowlist: () => ipcRenderer.invoke("axi:allowlist"),
+  axiAllowlistSet: (args: { action: string; enabled: boolean }) => ipcRenderer.invoke("axi:allowlist-set", args),
 });
 
 contextBridge.exposeInMainWorld("chatAPI", chatAPI);

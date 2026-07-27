@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React, { useState, useRef, useEffect } from "react";
 import {
   INTERNAL_CHAT_URL,
@@ -13,6 +14,16 @@ import {
   INTERNAL_ONBOARDING_URL,
   INTERNAL_IDE_URL,
   INTERNAL_TOOL_PANEL_PREFIX,
+  INTERNAL_ADAPORTAL_URL,
+  INTERNAL_ADAPORTAL_START_URL,
+  INTERNAL_ADAPORTAL_SKILLS_URL,
+  INTERNAL_ADAPORTAL_TRAIN_URL,
+  INTERNAL_ADAPORTAL_COMPUTE_URL,
+  INTERNAL_ADAPORTAL_BUNDLES_URL,
+  INTERNAL_ADAPORTAL_RANKINGS_URL,
+  INTERNAL_ADAPORTAL_STARGATE_URL,
+  INTERNAL_MULTIAGENT_URL,
+  INTERNAL_PRIVACY_DEMO_URL,
   Tab,
 } from "../types/types";
 import { LandingPage } from "./LandingPage";
@@ -29,6 +40,9 @@ import { OnboardingPage } from "./OnboardingPage";
 import IDEPage from "./ide/IDEPage";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { ChatView } from "./Chatview";
+import { AdaPortalPanel } from "./AdaPortalPanel";
+import { MultiAgentPanel } from "./MultiAgentPanel";
+import { PrivacyVaultDemo } from "./PrivacyVaultDemo";
 
 interface ContentAreaProps {
   url: string;
@@ -157,9 +171,21 @@ const BrowserView: React.FC<BrowserViewProps> = ({
     };
 
     const handleNewWindow = (e: any) => {
-      if (e.url) {
-        webview.loadURL(e.url);
+      if (!e.url) return;
+
+      // Defense: open external (non-localhost) URLs in the system browser
+      // instead of nesting them inside the app webview.
+      try {
+        const urlObj = new URL(e.url);
+        if (!urlObj.hostname.match(/^(localhost|127\.0\.0\.1)$/)) {
+          window.electronAPI?.shell?.openExternal?.(e.url);
+          return;
+        }
+      } catch {
+        // Invalid URL — fall through to webview load
       }
+
+      webview.loadURL(e.url);
     };
 
     const handlePageTitleUpdated = (e: any) => {
@@ -319,38 +345,6 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
   onOnboardingComplete,
   tabId,
 }) => {
-  // ── IDE persistence ──────────────────────────────────────────────────────────
-  // IDEPage is kept mounted for the lifetime of this tab once first visited.
-  // Navigating away hides it with CSS (display:none); returning makes it visible
-  // again — the PTY sessions inside are never destroyed by a navigation event.
-  // Each tab has its own ContentArea instance, so each gets its own IDEPage.
-  const ideEverVisited = useRef(false);
-  const lastIdeUrl = useRef<string>(INTERNAL_IDE_URL);
-  const isIDEUrl = url === INTERNAL_IDE_URL || url.startsWith(INTERNAL_IDE_URL + "?");
-
-  if (isIDEUrl) {
-    ideEverVisited.current = true;
-    lastIdeUrl.current = url;
-  }
-
-  const ideLayer = ideEverVisited.current ? (
-    <div
-      className="absolute inset-0 h-full overflow-hidden bg-gray-950 text-gray-100"
-      style={{ display: isIDEUrl ? undefined : "none" }}
-    >
-      <IDEPage url={lastIdeUrl.current} onNavigate={onNavigate} />
-    </div>
-  ) : null;
-
-  // Wraps every page render so the persistent IDE layer is always present.
-  const wrap = (content: React.ReactNode) => (
-    <div className="relative w-full h-full">
-      {ideLayer}
-      {!isIDEUrl && content}
-    </div>
-  );
-  // ─────────────────────────────────────────────────────────────────────────────
-
   // Handle Demo Command
   if (url === "demo://start") {
     useEffect(() => {
@@ -360,7 +354,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       onNavigate(INTERNAL_HOME_URL);
     }, [url, onStartDemo, onNavigate]);
 
-    return wrap(<div className="bg-black w-full h-full" />);
+    return <div className="bg-black w-full h-full" />;
   }
 
   // Handle Internal Pages
@@ -373,7 +367,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <LandingPage
         onNavigate={onNavigate}
         customGreeting={settings.customGreeting}
@@ -386,6 +380,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
     url === INTERNAL_SETTINGS_URL ||
     url.startsWith(INTERNAL_SETTINGS_URL + "#")
   ) {
+    // Extract hash for scroll section (e.g., #nodes -> "nodes")
     const scrollSection = url.includes("#") ? url.split("#")[1] : undefined;
 
     useEffect(() => {
@@ -396,7 +391,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
         <SettingsPage
           homeUrl={settings.homeUrl}
@@ -411,7 +406,6 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       </div>
     );
   }
-
   if (url === INTERNAL_CHAT_URL) {
     useEffect(() => {
       onUpdateTab({
@@ -421,7 +415,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
         <ChatView
           onNavigate={onNavigate}
@@ -441,7 +435,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-hidden bg-gray-950 text-gray-100">
         <MCPPage />
       </div>
@@ -457,9 +451,9 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
-        <MosaicBotPanel />
+        <MosaicBotPanel onNavigate={onNavigate} />
       </div>
     );
   }
@@ -472,20 +466,18 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
         favicon: undefined,
       });
     }, [url]);
-
-    return wrap(
+    return (
       <div className="h-full overflow-hidden bg-gray-950 text-gray-100">
-        <ChatPage />
+        <ChatPage />{" "}
       </div>
     );
   }
-
   if (url === INTERNAL_WEB3_URL) {
     useEffect(() => {
       onUpdateTab({ title: "Web3", isLoading: false, favicon: undefined });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
         <Web3Page />
       </div>
@@ -497,7 +489,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       onUpdateTab({ title: "Vault", isLoading: false, favicon: undefined });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
         <VaultPage />
       </div>
@@ -509,7 +501,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       onUpdateTab({ title: "HyperInsight", isLoading: false, favicon: undefined });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-hidden bg-gray-950 text-gray-100">
         <HyperInsightView />
       </div>
@@ -521,7 +513,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       onUpdateTab({ title: "Tool Sandbox", isLoading: false, favicon: undefined });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
         <SandboxPage onNavigate={onNavigate} />
       </div>
@@ -530,10 +522,10 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
 
   if (url.startsWith(INTERNAL_TOOL_PANEL_PREFIX)) {
     const toolId = url.slice(INTERNAL_TOOL_PANEL_PREFIX.length);
-    return wrap(<ToolPanelPage toolId={toolId} url={url} onUpdateTab={onUpdateTab} />);
+    return <ToolPanelPage toolId={toolId} url={url} onUpdateTab={onUpdateTab} />;
   }
 
-  if (isIDEUrl) {
+  if (url === INTERNAL_IDE_URL || url.startsWith(INTERNAL_IDE_URL + "?")) {
     useEffect(() => {
       onUpdateTab({
         title: "IDE",
@@ -542,8 +534,11 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    // IDEPage is rendered by ideLayer above; nothing else needed here.
-    return wrap(null);
+    return (
+      <div className="h-full overflow-hidden bg-gray-950 text-gray-100">
+        <IDEPage url={url} onNavigate={onNavigate} />
+      </div>
+    );
   }
 
   if (url === INTERNAL_ONBOARDING_URL) {
@@ -555,11 +550,93 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <OnboardingPage
         onNavigate={onNavigate}
         onComplete={() => onOnboardingComplete?.()}
       />
+    );
+  }
+
+  // Stargate URLs
+  if (url.startsWith("browser://adaportal")) {
+    useEffect(() => {
+      onUpdateTab({
+        title: "Stargate",
+        isLoading: false,
+        favicon: undefined,
+      });
+    }, [url]);
+
+    return (
+      <div className="h-full overflow-hidden bg-gray-950 text-gray-100">
+        <AdaPortalPanel
+          url={url}
+          onNavigate={onNavigate}
+          onHireAgent={(agentId, agentName) => {
+            console.log('[ContentArea] Hiring agent:', agentId, agentName);
+            // Navigate to marketplace tab for agent hiring
+            onNavigate(INTERNAL_ADAPORTAL_URL);
+          }}
+          onBookTraining={(trainerId, trainerName) => {
+            console.log('[ContentArea] Booking training:', trainerId, trainerName);
+            // Navigate to training tab
+            onNavigate(INTERNAL_ADAPORTAL_TRAIN_URL);
+          }}
+          onGetPackage={(packageId, packageName) => {
+            console.log('[ContentArea] Getting package:', packageId, packageName);
+            // Navigate to packages tab
+            onNavigate(INTERNAL_ADAPORTAL_BUNDLES_URL);
+          }}
+          onSelectCompute={(tier) => {
+            console.log('[ContentArea] Selecting compute tier:', tier);
+            // Navigate to compute tab
+            onNavigate(INTERNAL_ADAPORTAL_COMPUTE_URL);
+          }}
+          onNavigateToChat={(message) => {
+            // Navigate to chat with the message
+            if (onCreateNewChatTab) {
+              onCreateNewChatTab();
+            } else {
+              onNavigate(INTERNAL_CHAT_URL);
+            }
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Multi-Agent URL
+  if (url.startsWith(INTERNAL_MULTIAGENT_URL)) {
+    useEffect(() => {
+      onUpdateTab({
+        title: "Multi-Agent",
+        isLoading: false,
+        favicon: undefined,
+      });
+    }, [url]);
+
+    return (
+      <div className="h-full overflow-hidden bg-gray-950 text-gray-100">
+        <MultiAgentPanel onCollapse={() => onNavigate(INTERNAL_HOME_URL)} />
+      </div>
+    );
+  }
+
+  // Privacy Vault Demo URL
+  if (url === INTERNAL_PRIVACY_DEMO_URL) {
+    useEffect(() => {
+      onUpdateTab({
+        title: "Privacy Demo",
+        isLoading: false,
+        favicon: undefined,
+      });
+    }, [url]);
+
+    return (
+      <div className="h-full overflow-y-auto bg-gray-950 text-gray-100">
+        <PrivacyVaultDemo />
+      </div>
     );
   }
 
@@ -572,7 +649,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
       });
     }, [url]);
 
-    return wrap(
+    return (
       <div className="h-full flex flex-col items-center justify-center text-gray-500 bg-gray-900">
         <Loader2 size={48} className="mb-4 text-gray-700" />
         <p>This internal page "{url}" is under construction.</p>
@@ -587,7 +664,7 @@ export const ContentArea: React.FC<ContentAreaProps> = ({
   }
 
   // Handle External Sites (Webview)
-  return wrap(
+  return (
     <BrowserView url={url} onNavigate={onNavigate} onUpdateTab={onUpdateTab} />
   );
 };

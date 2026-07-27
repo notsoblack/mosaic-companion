@@ -1,4 +1,5 @@
 import { ToolUIBlock } from "../components/tool-ui";
+import { SoulGrade, AgentCapabilityConfig } from "./soul";
 // AI Agent Types and Configuration
 
 export type AIProvider =
@@ -6,8 +7,13 @@ export type AIProvider =
   | "openai"
   | "gemini"
   | "ollama"
+  | "ollama-cloud"
   | "custom"
-  | "hypercycle";
+  | "hypercycle"
+  | "hermes"
+  | "hermes-aim"
+  | "hermes-api"
+  | "generic";
 
 /** Hypercycle routing: TODA micropay vs Basechain (EVM) — same direct `host:port` URL shape. */
 export type HypercycleBackend = "toda" | "basechain";
@@ -17,22 +23,26 @@ export interface AIAgentConfig {
   name: string;
   provider: AIProvider;
   apiKey: string;
-  /**
-   * Transient, set by the main process when the stored (encrypted) API key
-   * can't be decrypted on this machine. Never persisted.
-   */
-  apiKeyUnavailable?: boolean;
-  baseUrl?: string; // Custom/Ollama endpoint, or Hypercycle node base (see hypercycleBackend)
+  baseUrl?: string;
   model: string;
   maxTokens?: number;
   temperature?: number;
   isActive: boolean;
   createdAt: number;
-  boxAccess?: string[]; // IDs of vault boxes this agent can access
-  richUI?: boolean; // Allow agent to render charts, tables, cards inline via <mosaic_ui>
+  boxAccess?: string[];
+  richUI?: boolean;
   /**
-   * Hypercycle: `toda` (default) or `basechain` — node base is scheme + host; ports are configured separately.
+   * Hermes skills attached to this agent. The skill content (SKILL.md + references/)
+   * is injected into the system prompt before each API call.
+   * Format: skill names as registered in ~/.hermes/skills/
    */
+  skills?: string[];
+  /**
+   * Vault skill assignments by box ID. Maps box IDs to arrays of entry IDs (skill IDs).
+   * Used for Hermes Vault and other skill boxes to delegate specific skills to agents.
+   * Example: { "box-hermes-vault-123": ["entry-github-code-review", "entry-midnight-verify"] }
+   */
+  vaultSkills?: Record<string, string[]>;
   hypercycleBackend?: HypercycleBackend;
   /** @deprecated TODA always uses TDN in code; kept for legacy saved agents. */
   hypercycleCurrencyType?: string;
@@ -41,11 +51,11 @@ export interface AIAgentConfig {
    */
   hypercycleServerPort?: number;
   /**
-   * Hypercycle: app port (POST `/api/aim/{index}/request`). TODA default 8006; Basechain 8016.
+   * Hypercycle: app port (POST \`/api/aim/{index}/request\`). TODA default 8006; Basechain 8016.
    */
   hypercycleAppPort?: number;
   /**
-   * Hypercycle: AIM route index (`/api/aim/{index}/request`). Default 0 (TODA) or 2 (Basechain) when unset.
+   * Hypercycle: AIM route index (\`/api/aim/{index}/request\`). Default 0 (TODA) or 2 (Basechain) when unset.
    */
   hypercycleAimIndex?: number;
   /**
@@ -53,17 +63,39 @@ export interface AIAgentConfig {
    */
   hypercycleStreamPort?: number;
   /**
-   * Hypercycle: optional `tx-signature` override.
+   * Hypercycle: optional \`tx-signature\` override.
    * TODA: placeholder if unset. Basechain: wallet EIP-191 signs the nonce automatically if unset.
    */
   hypercycleTxSignature?: string;
-  /** Hypercycle: override `tx-driver` header (default: toda_micropay / basechain). */
+  /** Hypercycle: override \`tx-driver\` header (default: toda_micropay / basechain). */
   hypercycleTxDriver?: string;
   /**
-   * Hypercycle: optional `tx-sender` for POST /stream only (e.g. name.hypercycle.biz.todaq.net).
+   * Hypercycle: optional \`tx-sender\` for POST /stream only (e.g. name.hypercycle.biz.todaq.net).
    * If omitted, uses the same TODA address as nonce/AIM steps.
    */
   hypercycleStreamTxSender?: string;
+  /** Optional ANFE token ID this agent is deployed to (for Hermes AIM tracking). */
+  anfeTokenId?: string;
+  /**
+   * SOUL.md identity layer — predefined soul archetype ID.
+   * One of: executor, researcher, creative, guardian, navigator, fast, custom
+   */
+  soulId?: string;
+  /**
+   * Custom SOUL.md content override.
+   * Takes precedence over soulId if non-empty.
+   */
+  soulOverride?: string;
+  /**
+   * Last SOUL grade from soul-grader.
+   * Contains score, verdict, blockers, and recommendations.
+   */
+  soulGrade?: SoulGrade;
+  /**
+   * Capability configuration for Hermes tools access.
+   * Defines which tools and vault boxes the agent can access.
+   */
+  capabilities?: AgentCapabilityConfig;
 }
 
 export interface ChatMessage {
@@ -113,9 +145,14 @@ export const DEFAULT_MODELS: Record<AIProvider, string[]> = {
     "o1-mini",
   ],
   gemini: ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-  ollama: ["llama3.2", "mistral", "codellama", "deepseek-coder"],
+  ollama: ["llama3.2:3b", "qwen2.5-coder:7b", "gemma:2b", "qwen2.5:32b", "gpt-oss:20b"],
+  "ollama-cloud": ["kimi-k2.6", "kimi-k2.5", "minimax-m2.5", "deepseek-v4-flash", "qwen3-coder:480b"],
   custom: [],
   hypercycle: ["claude-sonnet-4-5-20250929"],
+  hermes: ["kimi-k2.6", "minimax", "custom"],
+  "hermes-aim": ["kimi-k2.6", "minimax", "custom"],
+  "hermes-api": ["hermes-agent"],
+  generic: ["custom"],
 };
 
 export const PROVIDER_INFO: Record<
@@ -142,6 +179,11 @@ export const PROVIDER_INFO: Record<
     color: "#8B5CF6",
     baseUrl: "http://localhost:11434",
   },
+  "ollama-cloud": {
+    name: "Ollama Cloud",
+    color: "#22D3EE",
+    baseUrl: "https://api.ollama.com",
+  },
   custom: {
     name: "Custom Endpoint",
     color: "#6B7280",
@@ -151,5 +193,25 @@ export const PROVIDER_INFO: Record<
     name: "Hypercycle Node",
     color: "#22D3EE",
     baseUrl: "http://207.53.252.108",
+  },
+  hermes: {
+    name: "Hermes Agent",
+    color: "#7C3AED",
+    baseUrl: "http://localhost:8642",
+  },
+  "hermes-aim": {
+    name: "Hermes AIM (HyperCycle Node)",
+    color: "#A78BFA",
+    baseUrl: "http://127.0.0.1:9000",
+  },
+  "hermes-api": {
+    name: "Hermes API Server",
+    color: "#00D4AA",
+    baseUrl: "http://127.0.0.1:8642",
+  },
+  generic: {
+    name: "Generic AIM",
+    color: "#6B7280",
+    baseUrl: "",
   },
 };

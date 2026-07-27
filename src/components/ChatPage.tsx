@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Bot, Plus, Send, MessageSquare, Users, X, Lock, Globe, Trash2 } from "lucide-react";
+import { Bot, Plus, Send, MessageSquare, Users, X, Lock, Globe } from "lucide-react";
 import type { AIAgentConfig } from "../types/ai";
 import type {
   ChatSettings,
@@ -17,7 +17,7 @@ export const ChatPage: React.FC = () => {
   // Core state
   const [settings, setSettings] = useState<ChatSettings>({
     serverUrl: "wss://agents-chat.hyperpg.site",
-    username: "",
+    username: "Mauricio P",
   });
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -26,7 +26,6 @@ export const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<Record<string, StoredMessage[]>>({});
   const [assignedAgents, setAssignedAgents] = useState<Record<string, string[]>>({});
   const [allAgents, setAllAgents] = useState<AIAgentConfig[]>([]);
-  const [myMemberId, setMyMemberId] = useState<string | null>(null);
 
   // UI state
   const [newRoomName, setNewRoomName] = useState("");
@@ -34,12 +33,60 @@ export const ChatPage: React.FC = () => {
   const [showNewRoom, setShowNewRoom] = useState(false);
   const [messageInput, setMessageInput] = useState("");
 
+  // Training room deployment signal from Stargate
+  const [trainingInfo, setTrainingInfo] = useState<{
+    roomId?: string;
+    roomName?: string;
+    agentName?: string;
+    skill?: string;
+  } | null>(null);
+  const [trainingNotice, setTrainingNotice] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const autoJoinedRef = useRef(false);
   const settingsLoadedRef = useRef(false);
   const shouldAutoConnectRef = useRef(false);
   const autoConnectInFlightRef = useRef(false);
   const lastAutoConnectKeyRef = useRef<string | null>(null);
+
+  // ── Training room detection ────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("stargate_training_deployment");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setTrainingInfo(parsed);
+        // Clear after consumption so we don't re-activate on refresh
+        sessionStorage.removeItem("stargate_training_deployment");
+      }
+    } catch {
+      // Ignore corrupt sessionStorage
+    }
+  }, []);
+
+  // Auto-select training room when it appears in the room list
+  useEffect(() => {
+    if (trainingInfo?.roomId && status === "connected") {
+      const room = rooms.find((r) => r.id === trainingInfo.roomId);
+      if (room) {
+        if (!joinedRoomIds.has(room.id)) {
+          window.chatAPI?.joinRoom(room.id);
+        }
+        setActiveRoomId(room.id);
+      }
+    }
+  }, [trainingInfo, rooms, status, joinedRoomIds]);
+
+  // Notify user when training room is active
+  useEffect(() => {
+    if (trainingInfo?.agentName && activeRoomId === trainingInfo.roomId) {
+      setTrainingNotice(
+        `${trainingInfo.agentName} is training here${trainingInfo.skill ? ` for "${trainingInfo.skill}"` : ""}. Interact to guide its learning.`
+      );
+      const t = setTimeout(() => setTrainingNotice(null), 6000);
+      return () => clearTimeout(t);
+    }
+  }, [trainingInfo, activeRoomId]);
 
   // Load settings and agents on mount
   useEffect(() => {
@@ -51,10 +98,9 @@ export const ChatPage: React.FC = () => {
       settingsLoadedRef.current = true;
     });
     window.electronAPI.aiAgents.get().then(setAllAgents);
-    window.chatAPI?.status().then(({ status: s, memberId }) => {
+    window.chatAPI?.status().then(({ status: s }) => {
       setStatus(s as ConnectionStatus);
       if (s === "connected") {
-        if (memberId) setMyMemberId(memberId);
         autoJoinedRef.current = true;
         window.chatAPI?.listRooms();
       }
@@ -66,17 +112,13 @@ export const ChatPage: React.FC = () => {
     const cleanups: Array<() => void> = [];
 
     cleanups.push(
-      window.chatAPI?.onConnectionChanged(({ status: s, memberId }) => {
+      window.chatAPI?.onConnectionChanged(({ status: s }) => {
         setStatus(s as ConnectionStatus);
-        if (s === "disconnected" || s === "connecting") {
-          setMyMemberId(null);
-        }
         if (s === "disconnected") {
           setJoinedRoomIds(new Set());
           setActiveRoomId(null);
           autoJoinedRef.current = false;
         } else if (s === "connected") {
-          if (memberId) setMyMemberId(memberId);
           autoJoinedRef.current = false;
           window.chatAPI?.listRooms();
         }
@@ -135,28 +177,6 @@ export const ChatPage: React.FC = () => {
         setJoinedRoomIds((prev) => {
           const next = new Set(prev);
           next.delete(roomId);
-          return next;
-        });
-        setActiveRoomId((prev) => (prev === roomId ? null : prev));
-      }) ?? (() => {}),
-    );
-
-    cleanups.push(
-      window.chatAPI?.onRoomDeleted(({ roomId }) => {
-        setRooms((prev) => prev.filter((r) => r.id !== roomId));
-        setJoinedRoomIds((prev) => {
-          const next = new Set(prev);
-          next.delete(roomId);
-          return next;
-        });
-        setMessages((prev) => {
-          const next = { ...prev };
-          delete next[roomId];
-          return next;
-        });
-        setAssignedAgents((prev) => {
-          const next = { ...prev };
-          delete next[roomId];
           return next;
         });
         setActiveRoomId((prev) => (prev === roomId ? null : prev));
@@ -248,18 +268,9 @@ export const ChatPage: React.FC = () => {
     await window.chatAPI?.joinRoom(roomId);
   };
 
-  const handleDisconnect = async () => {
-    shouldAutoConnectRef.current = false;
-    await window.chatAPI?.disconnect();
-  };
-
   const handleLeave = async () => {
     if (!activeRoomId) return;
     await window.chatAPI?.leaveRoom(activeRoomId);
-  };
-
-  const handleDeleteRoom = async (roomId: string) => {
-    await window.chatAPI?.deleteRoom(roomId);
   };
 
   const handleCreateRoom = async () => {
@@ -352,32 +363,16 @@ export const ChatPage: React.FC = () => {
             className="w-full px-3 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-xs text-gray-200 placeholder-gray-600 disabled:opacity-50"
           />
           <div className="flex items-center gap-2 pt-1">
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
-            <span className="text-xs text-gray-500 flex-1">{statusLabel}</span>
+            {/* <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
+            <span className="text-xs text-gray-500 flex-1">{statusLabel}</span> */}
             {status === "disconnected" && (
               <button
-                onClick={handleConnect}
-                disabled={!settings.username.trim()}
-                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                Connect
-              </button>
-            )}
-            {status === "connecting" && (
-              <button
-                onClick={handleDisconnect}
-                className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
-            )}
-            {status === "connected" && (
-              <button
-                onClick={handleDisconnect}
-                className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors"
-              >
-                Disconnect
-              </button>
+                  onClick={handleConnect}
+                  disabled={!settings.username.trim()}
+                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Connect
+                </button>
             )}
           </div>
         </div>
@@ -418,34 +413,20 @@ export const ChatPage: React.FC = () => {
                   </p>
                   <p className="text-xs text-gray-600">{room.members.length} members</p>
                 </div>
-                <div className="flex items-center gap-1 flex-shrink-0 ml-2">
-                  {myMemberId && room.creatorId === myMemberId && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteRoom(room.id);
-                      }}
-                      title="Delete room"
-                      className="p-1 text-gray-600 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors"
-                    >
-                      <Trash2 size={11} />
-                    </button>
-                  )}
-                  {!joined && status === "connected" && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleJoin(room.id);
-                      }}
-                      className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded transition-colors"
-                    >
-                      Join
-                    </button>
-                  )}
-                  {joined && isActive && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-                  )}
-                </div>
+                {!joined && status === "connected" && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleJoin(room.id);
+                    }}
+                    className="ml-2 px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded transition-colors flex-shrink-0"
+                  >
+                    Join
+                  </button>
+                )}
+                {joined && isActive && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 flex-shrink-0 ml-2" />
+                )}
               </div>
             );
           })}
@@ -535,11 +516,20 @@ export const ChatPage: React.FC = () => {
                     <span className="text-gray-500">#</span>
                   )}
                   {activeRoom.name}
+                  {/* Training room indicator */}
+                  {trainingInfo?.roomId === activeRoom.id && (
+                    <span className="ml-2 px-1.5 py-0.5 bg-purple-900/40 text-purple-300 border border-purple-500/30 rounded text-[10px] font-medium uppercase tracking-wide">
+                      Training
+                    </span>
+                  )}
                 </h1>
                 <p className="text-xs text-gray-500">
                   {activeRoom.members.length} members
-                  {activeRoom.visibility && activeRoom.visibility !== "public" && ` \u00B7 ${activeRoom.visibility}`}
+                  {activeRoom.visibility && activeRoom.visibility !== "public" && ` · ${activeRoom.visibility}`}
                 </p>
+                {trainingNotice && (
+                  <p className="text-xs text-purple-400 mt-1">{trainingNotice}</p>
+                )}
               </div>
               <button
                 onClick={handleLeave}

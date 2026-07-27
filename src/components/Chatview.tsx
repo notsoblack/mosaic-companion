@@ -19,6 +19,7 @@ import {
   Wrench,
   ChevronRight,
   Image as ImageIcon,
+  Users,
 } from "lucide-react";
 import {
   AIAgentConfig,
@@ -27,7 +28,6 @@ import {
   PROVIDER_INFO,
 } from "../types/ai";
 import { AIService } from "../services/AIService";
-import { explainAIError } from "../services/aiErrorHelp";
 import {
   parseAction,
   executeToolCall,
@@ -296,19 +296,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
 
+  // Multi-agent orchestration state
+  const [multiAgentMode, setMultiAgentMode] = useState(false);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+  const [orchestrationMode, setOrchestrationMode] = useState<'parallel' | 'sequential' | 'collaborative'>('parallel');
+
   const activeAgents = agents.filter((a) => a.isActive);
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-
-  // Ollama, Hypercycle and custom endpoints (e.g. keyless local OpenAI-compatible
-  // servers) can work without an API key; the cloud providers fail without one —
-  // warn the user up front instead.
-  const agentMissingKey =
-    !!selectedAgent &&
-    selectedAgent.provider !== "ollama" &&
-    selectedAgent.provider !== "hypercycle" &&
-    selectedAgent.provider !== "custom" &&
-    !selectedAgent.apiKey?.trim();
 
   // Load agents on mount
   useEffect(() => {
@@ -560,7 +555,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     activeAgents.length,
   ]);
 
-  // Fetch MCP Servers
+  // Fetch MCP Servers — reactive to connection/disconnection events
   const [mcpServers, setMcpServers] = useState<any[]>([]);
   useEffect(() => {
     const loadServers = async () => {
@@ -572,48 +567,87 @@ export const ChatView: React.FC<ChatViewProps> = ({
         }
     };
     loadServers();
+
+    // Listen for real-time connect/disconnect so the UI (and system prompt)
+    // always reflects the CURRENTLY CONNECTED tool set.
+    const api = window.electronAPI.mcpAPI;
+    const offConnected = api.onServerConnected ? api.onServerConnected(loadServers) : undefined;
+    const offDisconnected = api.onServerDisconnected ? api.onServerDisconnected(loadServers) : undefined;
+
+    return () => {
+      if (offConnected) offConnected();
+      if (offDisconnected) offDisconnected();
+    };
   }, []);
 
   // Recursive handler for AI conversation flow
   const processAIResponse = async (
     currentSession: ChatSession,
     currentMessages: ChatMessage[],
-    depth: number = 0
+    depth: number = 0,
+    chainDepth: number = 0,
   ) => {
     if (depth > 10) {
       console.warn("Max recursion depth reached");
+      const stopMsg: ChatMessage = {
+        id: `msg-${Date.now()}`,
+        role: "assistant",
+        content: "I hit the maximum agent-response recursion limit while trying to complete this task. Please ask a more focused question or split the request into smaller steps.",
+        timestamp: Date.now(),
+        agentId: selectedAgent!.id,
+      };
+      const stopSession = {
+        ...currentSession,
+        messages: [...stripSystemContext(currentMessages), stopMsg],
+        updatedAt: Date.now(),
+      };
+      setSessions((prev) => prev.map((s) => (s.id === currentSession.id ? stopSession : s)));
+      await saveSession(stopSession);
+      setStreamingContent("");
+      setIsGenerating(false);
+      return;
+    }
+
+    // Hard safety: count only the *trailing* contiguous tool-result messages
+    // at the end of the current turn, not every tool result ever sent in history.
+    // Prevents a session with 100+ historical tool calls from locking every reply.
+    const toolResultCount = (() => {
+      let count = 0;
+      for (let i = currentMessages.length - 1; i >= 0; i--) {
+        const m = currentMessages[i];
+        if (m.role === "user" && m.content.startsWith("[Tool Output for")) {
+          count++;
+        } else {
+          break;
+        }
+      }
+      return count;
+    })();
+    // Safety limits — raised to allow deep exploration tasks (e.g. "learn everything
+    // about X") while still preventing infinite loops. Per-user request: no artificial
+    // low caps. Hard ceiling at 10 consecutive tool results / 10 recursion depth.
+    if (toolResultCount >= 10 || chainDepth >= 10) {
+      console.warn(`[processAIResponse] Tool-chain safety limit reached (${toolResultCount} tool results, chainDepth=${chainDepth}). Stopping loop to force synthesis.`);
+      const stopMsg: ChatMessage = {
+        id: `msg-${Date.now()}`,
+        role: "assistant",
+        content: "I've reached the tool-chain safety limit to prevent runaway loops. I'll summarize what I know so far, or you can ask a more specific follow-up question.",
+        timestamp: Date.now(),
+        agentId: selectedAgent!.id,
+      };
+      const stopSession = {
+        ...currentSession,
+        messages: [...stripSystemContext(currentMessages), stopMsg],
+        updatedAt: Date.now(),
+      };
+      setSessions((prev) => prev.map((s) => (s.id === currentSession.id ? stopSession : s)));
+      await saveSession(stopSession);
+      setStreamingContent("");
       setIsGenerating(false);
       return;
     }
 
     let fullResponse = "";
-
-    // Guard against double-append: onError may fire AND handleStream may
-    // rethrow, landing us in the outer catch for the same failure.
-    let errorAppended = false;
-
-    const appendError = async (error: Error) => {
-      if (errorAppended) return;
-      errorAppended = true;
-      const errorMsg: ChatMessage = {
-        id: `msg-${Date.now()}`,
-        role: "assistant",
-        content: `⚠️ ${explainAIError(selectedAgent!.provider, error.message, selectedAgent!.baseUrl)}\n\nYou can update this agent under Configuration → AI Agents.`,
-        timestamp: Date.now(),
-        agentId: selectedAgent!.id,
-      };
-      const errorSession = {
-        ...currentSession,
-        messages: [...stripSystemContext(currentMessages), errorMsg],
-        updatedAt: Date.now(),
-      };
-      setSessions((prev) =>
-        prev.map((s) => (s.id === currentSession.id ? errorSession : s)),
-      );
-      await saveSession(errorSession);
-      setStreamingContent("");
-      setIsGenerating(false);
-    };
 
     try {
       await AIService.sendMessage(selectedAgent!, currentMessages, {
@@ -704,10 +738,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
              );
 
              // Create Tool Output message
+             const chainCount = (() => {
+               let count = 0;
+               for (let i = currentMessages.length - 1; i >= 0; i--) {
+                 const m = currentMessages[i];
+                 if (m.role === "user" && m.content.startsWith("[Tool Output for")) {
+                   count++;
+                 } else {
+                   break;
+                 }
+               }
+               return count;
+             })() + 1;
+             const synthesisHint = chainCount >= 10
+               ? "\n\n[CRITICAL LOOP PREVENTION: You have already received data from several tools. Do NOT call another tool. Synthesize the collected tool outputs into a concise final answer NOW.]"
+               : "";
              const toolMsg: ChatMessage = {
                  id: `msg-${Date.now() + 1}`,
                  role: "user",
-                 content: `[Tool Output for ${action.params?.server}:${action.params?.tool}]\n${result.text}\n\n[Instruction: Use ONLY the data above. Respond in 1-2 sentences. Do not add data from your training — only from this tool output.]`,
+                 content: `[Tool Output for ${action.params?.server}:${action.params?.tool}]\n${result.text}\n\n[Instruction: Use ONLY the data above. If this answers the user's original question, respond in 1-2 sentences with the answer. Only call another tool if the user explicitly asked for a NEW, unrelated fact. Do not chain tools to explore the same topic further.]${synthesisHint}`,
                  timestamp: Date.now(),
                  agentId: selectedAgent!.id,
                  uiBlocks: inlineBlocks,
@@ -737,7 +786,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
              // "analyze" (default) = send data back to agent for commentary
              // Keep system context for the AI on the recursive call
              const aiMessages = [...currentMessages, cleanedAssistantMsg, toolMsg];
-             await processAIResponse(nextSession, aiMessages, depth + 1);
+             await processAIResponse(nextSession, aiMessages, depth + 1, chainDepth + 1);
              return;
           }
 
@@ -783,23 +832,171 @@ export const ChatView: React.FC<ChatViewProps> = ({
         },
         onError: async (error) => {
             console.error("Stream error:", error);
-            await appendError(error);
+            const errorMsg: ChatMessage = {
+                id: `msg-${Date.now()}`,
+                role: "assistant",
+                content: `⚠️ Error: ${error.message}`,
+                timestamp: Date.now(),
+                agentId: selectedAgent!.id
+            };
+            const errorSession = { ...currentSession, messages: [...currentMessages, errorMsg], updatedAt: Date.now() };
+            setSessions(prev => prev.map(s => s.id === currentSession.id ? errorSession : s));
+            await saveSession(errorSession);
+            setStreamingContent("");
+            setIsGenerating(false);
         }
       });
     } catch (error) {
-       // Pre-stream errors (e.g. 401/429 thrown before streaming starts) land
-       // here — surface them in the chat instead of only console.error-ing.
+       // Handle sync errors in sendMessage
        console.error("Sync error in sendMessage:", error);
-       await appendError(error instanceof Error ? error : new Error(String(error)));
+       setIsGenerating(false);
     }
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || !selectedAgent || isGenerating || agentMissingKey)
-      return;
-
     const messageContent = input.trim();
+    if (!messageContent || isGenerating) return;
+
     setInput("");
+
+    // ====================================================================
+    // MULTI-AGENT ORCHESTRATION MODE
+    // ====================================================================
+    if (multiAgentMode && selectedAgentIds.length > 1) {
+      // Create a unified session for multi-agent mode
+      const maSessionId = `ma-session-${Date.now()}`;
+      const maSession: ChatSession = {
+        id: maSessionId,
+        agentId: "multi-agent",
+        title: messageContent.slice(0, 40),
+        messages: [{
+          id: `msg-${Date.now()}`,
+          role: "user",
+          content: messageContent,
+          timestamp: Date.now(),
+          agentId: "multi-agent",
+        }],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setSessions((prev) => [maSession, ...prev]);
+      setActiveSessionId(maSessionId);
+      setIsGenerating(true);
+
+      const targetAgents = activeAgents.filter(a => selectedAgentIds.includes(a.id));
+      const agentResponses: { agent: AIAgentConfig; response: string }[] = [];
+
+      try {
+        if (orchestrationMode === "parallel") {
+          // Parallel: all agents answer simultaneously
+          const promises = targetAgents.map(async (agent) => {
+            try {
+              const msgs: ChatMessage[] = [{
+                id: `sys-${Date.now()}`,
+                role: "user",
+                content: `[System Context]\nYou are ${agent.name} (${agent.model} via ${agent.provider}). Answer independently.`,
+                timestamp: Date.now(),
+                agentId: agent.id,
+              }, {
+                id: `usr-${Date.now()}`,
+                role: "user",
+                content: messageContent,
+                timestamp: Date.now(),
+                agentId: agent.id,
+              }];
+              const resp = await AIService.sendMessage(agent, msgs);
+              return { agent, response: resp };
+            } catch (e: any) {
+              return { agent, response: `⚠️ Error: ${e.message}` };
+            }
+          });
+          const results = await Promise.all(promises);
+          agentResponses.push(...results);
+
+        } else if (orchestrationMode === "sequential") {
+          // Sequential: each agent sees the previous agent's answer
+          let context = messageContent;
+          for (const agent of targetAgents) {
+            const msgs: ChatMessage[] = [{
+              id: `sys-${Date.now()}-${agent.id}`,
+              role: "user",
+              content: `[System Context]\nYou are ${agent.name} (${agent.model}). ${agentResponses.length > 0 ? "Previous agents have answered. Build upon or critique their work." : "Answer first."}`,
+              timestamp: Date.now(),
+              agentId: agent.id,
+            }, {
+              id: `usr-${Date.now()}`,
+              role: "user",
+              content: context,
+              timestamp: Date.now(),
+              agentId: agent.id,
+            }];
+            try {
+              const resp = await AIService.sendMessage(agent, msgs);
+              agentResponses.push({ agent, response: resp });
+              context += `\n\n[${agent.name} said]:\n${resp}`;
+            } catch (e: any) {
+              agentResponses.push({ agent, response: `⚠️ Error: ${e.message}` });
+            }
+          }
+
+        } else if (orchestrationMode === "collaborative") {
+          // Collaborative: all see the same prompt, results merged
+          const promises = targetAgents.map(async (agent) => {
+            try {
+              const msgs: ChatMessage[] = [{
+                id: `sys-${Date.now()}`,
+                role: "user",
+                content: `[System Context]\nYou are ${agent.name} (${agent.model} via ${agent.provider}). You are part of a collaborative swarm. Other agents will also answer — focus on your unique perspective.`,
+                timestamp: Date.now(),
+                agentId: agent.id,
+              }, {
+                id: `usr-${Date.now()}`,
+                role: "user",
+                content: messageContent,
+                timestamp: Date.now(),
+                agentId: agent.id,
+              }];
+              const resp = await AIService.sendMessage(agent, msgs);
+              return { agent, response: resp };
+            } catch (e: any) {
+              return { agent, response: `⚠️ Error: ${e.message}` };
+            }
+          });
+          const results = await Promise.all(promises);
+          agentResponses.push(...results);
+        }
+
+        // Build multi-agent response messages
+        const responseMessages: ChatMessage[] = agentResponses.map(({ agent, response }, idx) => ({
+          id: `msg-resp-${Date.now()}-${idx}`,
+          role: "assistant",
+          content: `**${agent.name}** (${agent.provider} · ${agent.model})\n\n${response}`,
+          timestamp: Date.now(),
+          agentId: agent.id,
+        }));
+
+        const finalSession: ChatSession = {
+          ...maSession,
+          messages: [...maSession.messages, ...responseMessages],
+          updatedAt: Date.now(),
+        };
+
+        setSessions((prev) => prev.map(s => s.id === maSessionId ? finalSession : s));
+        await saveSession(finalSession);
+        setIsGenerating(false);
+        return;
+
+      } catch (e: any) {
+        console.error("Multi-agent error:", e);
+        setIsGenerating(false);
+        return;
+      }
+    }
+
+    // ====================================================================
+    // SINGLE-AGENT MODE (original behavior)
+    // ====================================================================
+    if (!selectedAgent) return;
 
     // Get or create session
     let session = activeSession;
@@ -857,22 +1054,124 @@ export const ChatView: React.FC<ChatViewProps> = ({
         // prompts. If we inject Web3 + "must use tools / say if none" rules, the model refuses
         // general questions (e.g. weather) because no weather tool exists.
         let idCounter = 0;
+        // ═══════════════════════════════════════════════════════════════════
+        // AUTO-DISPATCH: Proactively call tools for known intents
+        // kimi-k2.6 cannot reliably emit <use_tool> XML. Instead of
+        // waiting for the model to volunteer tool calls, we detect the
+        // user's intent and dispatch relevant tools ourselves, then inject
+        // the results into the conversation before the LLM ever sees it.
+        // ═══════════════════════════════════════════════════════════════════
+        let autoDispatchedResults: { role: "tool"; content: string }[] = [];
+        const lowerMsg = messageContent.toLowerCase();
+
+        // Intent: MCP / integrations / servers / tools inventory
+        const isMCPTopicsQuery = /\bmcp\b|\bintegrations?\b|\bservers?\b|\btools?\b|\bwhat.*(have|available)|\blist.*tool/i.test(lowerMsg);
+        if (isMCPTopicsQuery) {
+          try {
+            const servers = await window.electronAPI.mcpAPI.listServers();
+            const connected = (servers || []).filter((s: any) => s.initialized === true);
+            const disconnected = (servers || []).filter((s: any) => s.initialized !== true);
+            const toolsSummary = connected.map((s: any) => {
+              const toolNames = (s.tools || []).map((t: any) => t.name).join(", ");
+              return `  • ${s.name}: ${s.tools?.length || 0} tools (${toolNames || "none listed"})`;
+            }).join("\n");
+            autoDispatchedResults.push({
+              role: "tool",
+              content: `MCP SERVER STATUS\n════════════════\nConnected (${connected.length}):\n${toolsSummary || "  (none)"}\n\nDisconnected (${disconnected.length}):\n${disconnected.map((s: any) => `  • ${s.name}`).join("\n") || "  (none)"}`
+            });
+          } catch (e) {
+            console.error("[AutoDispatch] MCP list failed:", e);
+          }
+        }
+
+        // Intent: Vault / boxes
+        const isVaultQuery = /\bvault\b|\bbox(es)?\b|\bstorage\b/i.test(lowerMsg);
+        if (isVaultQuery && selectedAgent) {
+          try {
+            const boxes = await window.electronAPI.vault.getAgentBoxes(selectedAgent.id);
+            if (boxes && boxes.length > 0) {
+              autoDispatchedResults.push({
+                role: "tool",
+                content: `VAULT BOXES FOR ${selectedAgent.name}\n════════════════\n${boxes.map((b: any) => `  • "${b.name}" (ID: ${b.id})${b.description ? ` — ${b.description}` : ""}`).join("\n")}`
+              });
+            }
+          } catch (e) {
+            console.error("[AutoDispatch] Vault read failed:", e);
+          }
+        }
+
+        // Intent: Skills / marketplace
+        const isSkillsQuery = /\bskills?\b|\bmarketplace\b|\bcapabilit(y|ies)\b/i.test(lowerMsg);
+        if (isSkillsQuery) {
+          try {
+            const prompt = await window.electronAPI.tools.getSystemPrompt();
+            if (prompt) {
+              // Truncate to avoid bloating context
+              const truncated = prompt.length > 4000 ? prompt.slice(0, 4000) + "\n...[truncated]" : prompt;
+              autoDispatchedResults.push({
+                role: "tool",
+                content: `BUILT-IN TOOLS\n════════════════\n${truncated}`
+              });
+            }
+          } catch (e) {
+            console.error("[AutoDispatch] Tools prompt failed:", e);
+          }
+        }
+
+        // Inject auto-dispatched results as system/tool messages
+        if (autoDispatchedResults.length > 0) {
+          for (const r of autoDispatchedResults) {
+            messagesForAI.push({
+              id: `autotool-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              role: "system",
+              content: `[Auto-Retrieved Data]\n${r.content}`,
+              timestamp: Date.now(),
+              agentId: selectedAgent.id
+            });
+          }
+          console.log(`[AutoDispatch] Injected ${autoDispatchedResults.length} tool result(s) into context`);
+        }
+
         const systemPrompts: string[] = [];
         const useMosaicAgentContext = selectedAgent.provider !== "hypercycle";
 
         if (useMosaicAgentContext) {
-          // 0. Universal anti-hallucination header
+          // 0a. ABSOLUTE MANDATE — tool-first execution
+          // Models (especially kimi-k2.6) tend to describe plans in prose instead of
+          // emitting `<use_tool>`. This block uses negative reinforcement + repetition to
+          // break that habit. It MUST appear before the legacy anti-hallucination header.
+          systemPrompts.push(
+            `ABSOLUTE RULE -- NO EXCEPTIONS:\n` +
+            `1. If the user asks for ANY data, search, lookup, balance, price, status, or fact that you do not know with 100% certainty from THIS conversation, you MUST call a tool IMMEDIATELY.\n` +
+            `2. You are FORBIDDEN from saying "Let me search...", "I'll check...", "I'll dig into...", or ANY plan-description sentence UNLESS the very NEXT thing after that sentence is a <use_tool> XML tag.\n` +
+            `3. NEVER describe what you WILL do. JUST DO IT by outputting the <use_tool> tag. Descriptions without tags are WORTHLESS and WRONG.\n` +
+            `4. If you do not call a tool, the user gets ZERO information. Your training data is outdated. ANY number, name, or fact you write without a tool call is a HALLUCINATION.\n` +
+            `5. If no tool exists for the request, say exactly: "No tool is available for that request." -- nothing else.\n` +
+            `6. After a <use_tool> tag, STOP writing. Do not add a single character. The system will inject [Tool Output] and you will continue then.\n` +
+            `7. LOOP PREVENTION: If you have already called 10 or more tools in this conversation, do NOT call another tool unless the user explicitly asked for a NEW, unrelated fact. Instead, SYNTHESIZE the tool outputs you already have into a concise final answer. Continuing to chain tools after you have enough data is a bug and is forbidden.`
+          );
+
+          // 0b. Legacy anti-hallucination header (kept for overlap coverage)
           systemPrompts.push(
             `IMPORTANT: Your training data is OUTDATED. For ANY question involving prices, balances, ` +
               `exchange rates, availability, status, or any real-time/time-sensitive data, you MUST call ` +
               `a tool FIRST. NEVER answer from memory or training data for factual claims. ` +
-              `If no tool is available for the request, say so — do not guess.`,
+              `If no tool exists for the request, say so -- do not guess. ` +
+              `After gathering at most 3 pieces of relevant data, STOP calling tools and answer from the collected tool outputs only.`
           );
 
           // 1. MCP Context
           const mcpPrompt = getMCPSystemPrompt(mcpServers);
           if (mcpPrompt) {
             systemPrompts.push(mcpPrompt);
+          } else if (mcpServers.length > 0) {
+            // getMCPSystemPrompt returned empty because all servers are disconnected
+            // Add a diagnostic line so the agent knows MCP is offline
+            const offline = mcpServers.map((s) => s.name).join(", ");
+            systemPrompts.push(
+              `MCP DIAGNOSTIC: All MCP servers are currently offline (${offline}). ` +
+              `No MCP tools are available. Use built-in tools only (vault, web3, gmail, etc.).`
+            );
           }
 
           // 2. Built-in tools context (Gmail, Web3, Vault, WASM) — the ToolRegistry
@@ -914,8 +1213,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         if (systemPrompts.length > 0) {
             const systemMessage: ChatMessage = {
                 id: `system-${Date.now()}-${idCounter++}`,
-                role: "user", // Inject as user for compatibility
-                content: `[System Context]\n${systemPrompts.join("\n\n")}`,
+                role: "system",
+                content: systemPrompts.join("\n\n"),
                 timestamp: Date.now(),
                 agentId: selectedAgent.id
             };
@@ -977,7 +1276,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           chatting.
         </p>
         <button
-          onClick={() => onNavigate?.(INTERNAL_SETTINGS_URL + "#agents")}
+          onClick={() => onNavigate?.(INTERNAL_SETTINGS_URL)}
           className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition-all hover:scale-[1.02] font-medium"
         >
           <Zap size={18} />
@@ -995,45 +1294,46 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div className="shrink-0 border-b border-gray-800 bg-gray-950/80 backdrop-blur-md px-6 py-4">
           <div className="max-w-4xl mx-auto flex items-center justify-between">
             {/* Agent Selector */}
-            <div className="relative" ref={agentSelectorRef}>
-              <button
-                onClick={() => setShowAgentSelector(!showAgentSelector)}
-                className="flex items-center gap-3 px-4 py-2 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl transition-colors"
-              >
-                {selectedAgent && (
-                  <>
-                    <div
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{
-                        backgroundColor:
-                          PROVIDER_INFO[selectedAgent.provider]?.color ||
-                          "#6B7280",
-                        boxShadow: `0 0 8px ${
-                          PROVIDER_INFO[selectedAgent.provider]?.color ||
-                          "#6B7280"
-                        }`,
-                      }}
-                    />
-                    <div className="text-left">
-                      <p className="text-sm font-medium text-white">
-                        {selectedAgent.name}
-                      </p>
-                      <p className="text-xs text-gray-500 font-mono">
-                        {selectedAgent.model}
-                      </p>
-                    </div>
-                  </>
-                )}
-                <ChevronDown
-                  size={16}
-                  className={`text-gray-400 transition-transform ${
-                    showAgentSelector ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
+            <div className="flex items-center gap-2">
+              <div className="relative" ref={agentSelectorRef}>
+                <button
+                  onClick={() => setShowAgentSelector(!showAgentSelector)}
+                  className="flex items-center gap-3 px-4 py-2 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl transition-colors"
+                >
+                  {selectedAgent && (
+                    <>
+                      <div
+                        className="w-2.5 h-2.5 rounded-full"
+                        style={{
+                          backgroundColor:
+                            PROVIDER_INFO[selectedAgent.provider]?.color ||
+                            "#6B7280",
+                          boxShadow: `0 0 8px ${
+                            PROVIDER_INFO[selectedAgent.provider]?.color ||
+                            "#6B7280"
+                          }`,
+                        }}
+                      />
+                      <div className="text-left">
+                        <p className="text-sm font-medium text-white">
+                          {selectedAgent.name}
+                        </p>
+                        <p className="text-xs text-gray-500 font-mono">
+                          {selectedAgent.model}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  <ChevronDown
+                    size={16}
+                    className={`text-gray-400 transition-transform ${
+                      showAgentSelector ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
 
-              {/* Agent Dropdown */}
-              {showAgentSelector && (
+                {/* Agent Dropdown */}
+                {showAgentSelector && (
                 <div className="absolute top-full left-0 mt-2 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl shadow-black/50 overflow-hidden z-50">
                   <div className="p-2">
                     {activeAgents.map((agent) => (
@@ -1078,6 +1378,73 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         )}
                       </button>
                     ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            </div>
+
+            {/* Multi-Agent Toggle + Panel */}
+            <div className="relative">
+              <button
+                onClick={() => setMultiAgentMode(!multiAgentMode)}
+                className={`p-2 rounded-lg transition-colors ${
+                  multiAgentMode
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
+                }`}
+                title={multiAgentMode ? "Single agent mode" : "Multi-agent orchestration"}
+              >
+                <Users size={18} />
+              </button>
+
+              {/* Multi-Agent Selection Panel */}
+              {multiAgentMode && (
+                <div className="absolute top-full right-0 mt-2 w-80 p-4 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl z-50">
+                  <p className="text-sm font-medium text-white mb-3">
+                    Select agents for orchestration
+                  </p>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {activeAgents.map((agent) => (
+                      <button
+                        key={agent.id}
+                        onClick={() => {
+                          if (selectedAgentIds.includes(agent.id)) {
+                            setSelectedAgentIds(selectedAgentIds.filter(id => id !== agent.id));
+                          } else {
+                            setSelectedAgentIds([...selectedAgentIds, agent.id]);
+                          }
+                        }}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
+                          selectedAgentIds.includes(agent.id)
+                            ? "bg-indigo-900/30 border-indigo-500 text-white"
+                            : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                        }`}
+                      >
+                        <div
+                          className="w-2 h-2 rounded-full"
+                          style={{
+                            backgroundColor: PROVIDER_INFO[agent.provider]?.color || "#6B7280",
+                          }}
+                        />
+                        <span className="text-sm">{agent.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs text-gray-500">Mode:</span>
+                    <select
+                      value={orchestrationMode}
+                      onChange={(e) => setOrchestrationMode(e.target.value as any)}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-1"
+                    >
+                      <option value="parallel">Parallel</option>
+                      <option value="sequential">Sequential</option>
+                      <option value="collaborative">Collaborative</option>
+                    </select>
+                    <span className="text-xs text-gray-500">
+                      {selectedAgentIds.length} agent{selectedAgentIds.length !== 1 ? 's' : ''} selected
+                    </span>
                   </div>
                 </div>
               )}
@@ -1133,44 +1500,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <div className="max-w-4xl mx-auto py-8 px-6">
             {(!activeSession || activeSession.messages.length === 0) &&
             !streamingContent ? (
-              agentMissingKey ? (
-                <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
-                  <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-6">
-                    <AlertCircle className="size-8 text-amber-400" />
-                  </div>
-                  <h2 className="text-xl font-semibold text-white mb-2">
-                    This agent isn't ready yet
-                  </h2>
-                  <p className="text-gray-500 max-w-md mb-6">
-                    {selectedAgent?.name} has no API key, so it can't respond.
-                    Add one in Configuration → AI Agents — it takes about a
-                    minute.
-                  </p>
-                  <button
-                    onClick={() => onNavigate?.(INTERNAL_SETTINGS_URL + "#agents")}
-                    className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition-all hover:scale-[1.02] font-medium"
-                  >
-                    <Zap size={18} />
-                    Add API key
-                  </button>
+              <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/30 flex items-center justify-center mb-6">
+                  <Sparkles className="size-8 text-indigo-400" />
                 </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
-                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/30 flex items-center justify-center mb-6">
-                    <Sparkles className="size-8 text-indigo-400" />
-                  </div>
-                  <h2 className="text-xl font-semibold text-white mb-2">
-                    Chat with {selectedAgent?.name || "AI"}
-                  </h2>
-                  <p className="text-gray-500 max-w-md">
-                    Start a conversation by typing a message below. Your chat
-                    will be powered by{" "}
+                <h2 className="text-xl font-semibold text-white mb-2">
+                  {multiAgentMode && selectedAgentIds.length > 1
+                    ? `${selectedAgentIds.length}-Agent Swarm`
+                    : `Chat with ${selectedAgent?.name || "AI"}`}
+                </h2>
+                <p className="text-gray-500 max-w-md">
+                  {multiAgentMode && selectedAgentIds.length > 1
+                    ? `All ${selectedAgentIds.length} selected agents will answer in ${orchestrationMode} mode. Each agent uses a different LLM backend.`
+                    : `Start a conversation by typing a message below. Your chat will be powered by `}
+                  {!multiAgentMode && (
                     <span className="text-indigo-400 font-mono">
                       {selectedAgent?.model}
                     </span>
-                  </p>
-                </div>
-              )
+                  )}
+                </p>
+              </div>
             ) : (
               <div className="space-y-6">
                 {activeSession?.messages.map((message) => {
@@ -1326,24 +1675,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Input Area */}
         <div className="shrink-0 border-t border-gray-800 bg-gray-950/80 backdrop-blur-md p-4">
           <div className="max-w-4xl mx-auto">
-            {agentMissingKey &&
-              activeSession &&
-              activeSession.messages.length > 0 && (
-                <div className="flex items-center gap-2 px-3 py-2 mb-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-300">
-                  <AlertCircle size={14} className="shrink-0 text-amber-400" />
-                  <span className="flex-1">
-                    {selectedAgent?.name} has no API key, so it can't respond.
-                    Add one in Configuration → AI Agents — it takes about a
-                    minute.
-                  </span>
-                  <button
-                    onClick={() => onNavigate?.(INTERNAL_SETTINGS_URL + "#agents")}
-                    className="shrink-0 font-medium text-amber-200 hover:text-white underline underline-offset-2 transition-colors"
-                  >
-                    Add API key
-                  </button>
-                </div>
-              )}
             <div className="flex items-end gap-3">
               <div className="flex-1 bg-gray-900 border border-gray-800 rounded-2xl p-2 focus-within:ring-2 focus-within:ring-indigo-500/50 focus-within:border-indigo-500/50 transition-all">
                 <textarea
@@ -1351,7 +1682,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={`Message ${selectedAgent?.name || "AI"}...`}
+                  placeholder={multiAgentMode && selectedAgentIds.length > 1
+                    ? `Message ${selectedAgentIds.length} agents in ${orchestrationMode} mode...`
+                    : `Message ${selectedAgent?.name || "AI"}...`}
                   className="w-full bg-transparent text-gray-100 placeholder-gray-500 resize-none min-h-[24px] max-h-[150px] px-3 py-2 focus:outline-none"
                   rows={1}
                   disabled={isGenerating}
@@ -1360,11 +1693,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 onClick={sendMessage}
                 data-auto-send
-                disabled={!input.trim() || isGenerating || agentMissingKey}
+                disabled={!input.trim() || isGenerating}
                 className={`
                   p-4 rounded-xl transition-all flex items-center justify-center
                   ${
-                    input.trim() && !isGenerating && !agentMissingKey
+                    input.trim() && !isGenerating
                       ? "bg-indigo-600 hover:bg-indigo-500 text-white hover:scale-105 shadow-lg shadow-indigo-500/25"
                       : "bg-gray-800 text-gray-500 cursor-not-allowed"
                   }
@@ -1380,23 +1713,53 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             {/* Status Bar */}
             <div className="flex items-center justify-center gap-2 mt-3 opacity-50">
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{
-                  backgroundColor: selectedAgent
-                    ? PROVIDER_INFO[selectedAgent.provider]?.color || "#6B7280"
-                    : "#6B7280",
-                  boxShadow: selectedAgent
-                    ? `0 0 6px ${
-                        PROVIDER_INFO[selectedAgent.provider]?.color ||
-                        "#6B7280"
-                      }`
-                    : "none",
-                }}
-              />
-              <span className="text-[10px] text-gray-500 font-mono tracking-widest uppercase">
-                {selectedAgent?.model || "No model selected"}
-              </span>
+              {multiAgentMode && selectedAgentIds.length > 1 ? (
+                <>
+                  <div className="flex items-center gap-1">
+                    {selectedAgentIds.map((aid, i) => {
+                      const ag = activeAgents.find(a => a.id === aid);
+                      if (!ag) return null;
+                      return (
+                        <div key={aid} className="flex items-center gap-1">
+                          <div
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{
+                              backgroundColor: PROVIDER_INFO[ag.provider]?.color || "#6B7280",
+                            }}
+                          />
+                          <span className="text-[10px] text-gray-500 font-mono">{ag.model}</span>
+                          {i < selectedAgentIds.length - 1 && (
+                            <span className="text-[10px] text-gray-600 mx-0.5">+</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <span className="text-[10px] text-indigo-400 font-mono tracking-widest uppercase">
+                    {orchestrationMode} swarm
+                  </span>
+                </>
+              ) : (
+                <>
+                  <div
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{
+                      backgroundColor: selectedAgent
+                        ? PROVIDER_INFO[selectedAgent.provider]?.color || "#6B7280"
+                        : "#6B7280",
+                      boxShadow: selectedAgent
+                        ? `0 0 6px ${
+                            PROVIDER_INFO[selectedAgent.provider]?.color ||
+                            "#6B7280"
+                          }`
+                        : "none",
+                    }}
+                  />
+                  <span className="text-[10px] text-gray-500 font-mono tracking-widest uppercase">
+                    {selectedAgent?.model || "No model selected"}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>

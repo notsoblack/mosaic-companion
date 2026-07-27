@@ -17,6 +17,8 @@ import {
   Thermometer,
   Zap,
   Info,
+  BookOpen,
+  X,
 } from "lucide-react";
 import {
   AIAgentConfig,
@@ -25,8 +27,9 @@ import {
   HypercycleBackend,
   PROVIDER_INFO,
 } from "../types/ai";
+import { SoulGrade } from "../types/soul";
 import { AIService } from "../services/AIService";
-import { explainAIError } from "../services/aiErrorHelp";
+import { SoulSelector } from "./SoulSelector";
 import { HypercycleBalancePanel } from "./HypercycleBalancePanel";
 import {
   getHypercycleAimIndex,
@@ -56,13 +59,13 @@ function hypercycleWalletReady(
 
 /** AIService.testConnection only needs an API key for cloud/custom providers. */
 function providerRequiresApiKeyForConnectionTest(p: AIProvider): boolean {
-  return p !== "ollama" && p !== "hypercycle";
+  return p !== "ollama" && p !== "ollama-cloud" && p !== "hypercycle" && p !== "hermes" && p !== "hermes-aim" && p !== "hermes-api";
 }
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 
 function providerRequiresApiKeyForDynamicModelFetch(p: AIProvider): boolean {
-  return p === "openai" || p === "claude" || p === "gemini";
+  return p === "openai" || p === "claude" || p === "gemini" || p === "ollama-cloud";
 }
 
 function normalizeGeminiModelId(modelId: string): string {
@@ -229,6 +232,54 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
       return normalizeModelList(ids);
     }
 
+    if (provider === "ollama") {
+      const baseUrl = agent.baseUrl || "http://localhost:11434";
+      try {
+        const response = await fetch(`${baseUrl}/api/tags`);
+        if (response.ok) {
+          const data = await response.json();
+          const ids = Array.isArray(data?.models)
+            ? data.models.map((item: { name?: string; model?: string }) => item.name || item.model || "")
+            : [];
+          const dynamic = normalizeModelList(ids);
+          if (dynamic.length > 0) return dynamic;
+        }
+      } catch (e) {
+        console.warn("[AIAgentsSettings] Could not fetch Ollama models:", e);
+      }
+      return getBaseModelList(provider);
+    }
+
+    if (provider === "ollama-cloud") {
+      // For cloud, try fetching from the cloud API if a key is set, otherwise use defaults
+      // Fix: use api.ollama.com (not ollama.com) - cloud API endpoint
+      let baseUrl = agent.baseUrl || PROVIDER_INFO[provider]?.baseUrl || "https://api.ollama.com";
+      // Migrate any old/incorrect URLs
+      if (baseUrl.includes("ollama.com") && !baseUrl.includes("api.ollama.com")) {
+        baseUrl = "https://api.ollama.com";
+      }
+      baseUrl = baseUrl.replace(/\/$/, "");
+      const apiKey = agent.apiKey?.trim();
+      if (apiKey) {
+        try {
+          const response = await fetch(`${baseUrl}/v1/models`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            const ids = Array.isArray(data?.data)
+              ? data.data.map((item: { id?: string }) => item.id || "")
+              : [];
+            const dynamic = normalizeModelList(ids);
+            if (dynamic.length > 0) return dynamic;
+          }
+        } catch (e) {
+          console.warn("[AIAgentsSettings] Could not fetch Ollama Cloud models:", e);
+        }
+      }
+      return getBaseModelList(provider);
+    }
+
     return getBaseModelList(provider);
   };
 
@@ -315,6 +366,13 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
       temperature: 0.7,
       isActive: false,
       createdAt: Date.now(),
+      // Default SOUL configuration
+      soulId: "executor",
+      soulOverride: "",
+      capabilities: {
+        enabledCapabilities: ["file_read", "memory_management", "session_search"],
+        vaultBoxAccess: [],
+      },
     };
 
     try {
@@ -422,9 +480,7 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
         ...prev,
         [agent.id]: {
           status: result.success ? "success" : "error",
-          message: result.success
-            ? result.message
-            : explainAIError(agent.provider, result.message, agent.baseUrl),
+          message: result.message,
         },
       }));
     } catch (e) {
@@ -432,18 +488,14 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
         ...prev,
         [agent.id]: {
           status: "error",
-          message: explainAIError(
-            agent.provider,
-            e instanceof Error ? e.message : String(e),
-            agent.baseUrl,
-          ),
+          message: e instanceof Error ? e.message : String(e),
         },
       }));
     }
 
     setTimeout(() => {
       setTestResults((prev) => ({ ...prev, [agent.id]: { status: "idle" } }));
-    }, 30000);
+    }, 15000);
   };
 
   const handleProviderChange = (agentId: string, provider: AIProvider) => {
@@ -530,7 +582,7 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
             ...prev,
             [agent.id]: getBaseModelList(agent.provider),
           }));
-          const providerName = PROVIDER_INFO[agent.provider].name;
+          const providerName = PROVIDER_INFO[agent.provider]?.name ?? "Unknown";
           const warningMessage = `Could not fetch ${providerName} models with the current key. Using default model list.`;
           console.warn(`[AIAgentsSettings] ${warningMessage}`, error);
           toast.warn(warningMessage);
@@ -579,7 +631,7 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
           {aiAgents.map((agent) => {
             const isExpanded = expandedAgent === agent.id;
             const testResult = testResults[agent.id] || { status: "idle" };
-            const providerColor = PROVIDER_INFO[agent.provider].color;
+            const providerColor = PROVIDER_INFO[agent.provider]?.color ?? "#6B7280";
 
             return (
               <div
@@ -614,7 +666,7 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
                         {agent.name}
                       </h3>
                       <p className="text-xs text-gray-500 font-mono">
-                        {PROVIDER_INFO[agent.provider].name} • {agent.model}
+                        {PROVIDER_INFO[agent.provider]?.name ?? "Unknown"} • {agent.model}
                       </p>
                     </div>
                   </div>
@@ -690,7 +742,7 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
                       </label>
                     </div>
 
-                    {agent.provider !== "hypercycle" && (
+                    {agent.provider !== "hypercycle" && agent.provider !== "hermes-aim" && agent.provider !== "hermes-api" && (
                       <label className="block">
                         <span className="text-sm text-gray-400 mb-1 block flex items-center gap-1">
                           <Key size={12} />
@@ -720,12 +772,6 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
                             )}
                           </button>
                         </div>
-                        {agent.apiKeyUnavailable && !agent.apiKey?.trim() && (
-                          <span className="text-xs text-amber-500 mt-1 block">
-                            Stored key can't be decrypted on this machine —
-                            re-enter it.
-                          </span>
-                        )}
                       </label>
                     )}
 
@@ -959,14 +1005,22 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
                         )}
                       </label>
 
-                      {(agent.provider === "custom" ||
+                    {(agent.provider === "custom" ||
                         agent.provider === "ollama" ||
+                        agent.provider === "ollama-cloud" ||
+                        agent.provider === "hermes" ||
+                        agent.provider === "hermes-aim" ||
+                        agent.provider === "hermes-api" ||
                         agent.provider === "hypercycle") && (
                         <label className="block">
                           <span className="text-sm text-gray-400 mb-1 block">
                             {agent.provider === "hypercycle"
                               ? "Node base URL"
-                              : "Base URL"}
+                              : agent.provider === "hermes" ||
+                                  agent.provider === "hermes-aim" ||
+                                  agent.provider === "hermes-api"
+                                ? "Hermes Base URL"
+                                : "Base URL"}
                           </span>
                           {agent.provider === "hypercycle" &&
                             agent.hypercycleBackend !== "basechain" && (
@@ -991,7 +1045,13 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
                                 ? agent.hypercycleBackend === "basechain"
                                   ? "http://207.53.252.108 or https://hyperpg.site/forward/…"
                                   : "http://207.53.252.108"
-                                : "http://localhost:11434"
+                                : agent.provider === "hermes-aim"
+                                  ? "http://127.0.0.1:9000"
+                                  : agent.provider === "hermes-api"
+                                    ? "http://127.0.0.1:8000"
+                                    : agent.provider === "hermes"
+                                      ? "http://127.0.0.1:8642"
+                                      : "http://localhost:11434"
                             }
                           />
                         </label>
@@ -1317,6 +1377,130 @@ export const AIAgentsSettings: React.FC<AIAgentsSettingsProps> = ({
                           `}
                         />
                       </button>
+                    </div>
+
+                    {/* ─── Attached Skills ─────────────────────────── */}
+                    <div className="pt-4 border-t border-gray-800">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm text-gray-300 flex items-center gap-1.5">
+                          <BookOpen size={14} />
+                          Attached Skills
+                          <span className="relative group">
+                            <Info size={13} className="text-gray-500 cursor-help" />
+                            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 w-64 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 pointer-events-none z-50 shadow-lg"
+                            >
+                              Skill files from ~/.hermes/skills/ are injected into the
+                              agent's system prompt before every API call. The agent
+                              acquires the full skill context during conversation.
+                            </span>
+                          </span>
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {agent.skills?.length || 0} attached
+                        </span>
+                      </div>
+
+                      {/* Skill chips */}
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        {(agent.skills || []).map((skillName) => (
+                          <span
+                            key={skillName}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-cyan-900/20 border border-cyan-500/30 rounded-lg text-xs text-cyan-400"
+                          >
+                            {skillName}
+                            <button
+                              onClick={() =>
+                                updateAgent(agent.id, {
+                                  skills: (agent.skills || []).filter((s) => s !== skillName),
+                                })
+                              }
+                              className="hover:text-cyan-200 transition-colors"
+                              title={`Remove ${skillName}`}
+                            >
+                              <X size={12} />
+                            </button>
+                          </span>
+                        ))}
+                        {(agent.skills || []).length === 0 && (
+                          <span className="text-xs text-gray-600 italic">
+                            No skills attached. Add skills to enhance this agent.
+                          </span>
+                        )}
+                      </div>
+
+                        {/* Add skill dropdown */}
+                      <div className="flex items-center gap-2">
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            const skillName = e.target.value;
+                            if (!skillName) return;
+                            if (agent.skills?.includes(skillName)) {
+                              toast.info(`Skill "${skillName}" is already attached`);
+                              return;
+                            }
+                            updateAgent(agent.id, {
+                              skills: [...(agent.skills || []), skillName],
+                            });
+                            toast.success(`Attached skill: ${skillName}`);
+                          }}
+                          className="flex-1 px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none transition-all text-gray-100 text-sm"
+                        >
+                          <option value="">+ Add a skill...</option>
+                          {/* Dynamically loaded from StargateSkillRegistry */}
+                          {(() => {
+                            try {
+                              const registry = require("../services/StargateSkillRegistry").stargateRegistry;
+                              const allSkills = registry.getSkills();
+                              const available = allSkills
+                                .filter((s: any) => !(agent.skills || []).includes(s.name))
+                                .sort((a: any, b: any) => (b.usageCount || 0) - (a.usageCount || 0));
+                              return available.map((s: any) => (
+                                <option key={s.name} value={s.name}>
+                                  {s.name} — {s.description?.slice(0, 40) || s.category}
+                                </option>
+                              ));
+                            } catch {
+                              // Fallback if registry not yet initialized
+                              return null;
+                            }
+                          })()}
+                        </select>
+                      </div>
+
+                      {/* Skill preload status */}
+                      {agent.skills && agent.skills.length > 0 && (
+                        <div className="mt-2 text-xs text-gray-500">
+                          💡 When you chat with {agent.name}, the full skill content from{" "}
+                          <code className="text-gray-400">~/.hermes/skills/...</code>
+                          will be injected into the system prompt before each API call.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ─── Agent Soul / Identity ───────────────────── */}
+                    <div className="pt-4 border-t border-gray-800">
+                      <SoulSelector
+                        selectedSoulId={agent.soulId || null}
+                        customSoulMarkdown={agent.soulOverride || null}
+                        soulGrade={agent.soulGrade}
+                        onSelectSoul={(soulId) =>
+                          updateAgent(agent.id, {
+                            soulId,
+                            soulOverride: "", // Clear override when selecting predefined
+                          })
+                        }
+                        onCustomizeSoul={(customMarkdown) =>
+                          updateAgent(agent.id, {
+                            soulOverride: customMarkdown,
+                          })
+                        }
+                        onGradeChange={(grade) =>
+                          updateAgent(agent.id, {
+                            soulGrade: grade,
+                          })
+                        }
+                      />
                     </div>
 
                     <div className="flex flex-col gap-2 pt-4 border-t border-gray-800">

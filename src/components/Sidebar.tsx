@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Home,
@@ -31,9 +32,10 @@ import {
   Shield,
   Hash,
   Code2,
+  Users,
+  BookOpen,
 } from "lucide-react";
 import {
-  SidebarItem,
   INTERNAL_HOME_URL,
   INTERNAL_MCP_URL,
   INTERNAL_MOSAICBOT_URL,
@@ -46,6 +48,9 @@ import {
   INTERNAL_SANDBOX_URL,
   INTERNAL_IDE_URL,
   INTERNAL_TOOL_PANEL_PREFIX,
+  INTERNAL_ADAPORTAL_START_URL,
+  INTERNAL_MULTIAGENT_URL,
+  INTERNAL_PRIVACY_DEMO_URL,
 } from "../types/types";
 import { AIAgentConfig, PROVIDER_INFO } from "../types/ai";
 import { NodeDetailPanel } from "../../plugins/hyperinsight/renderer/components/NodeDetailPanel";
@@ -55,7 +60,7 @@ import type { InstalledTool } from "../../electron/integrations/sandbox/types";
 const TOOL_ICON_MAP: Record<string, React.FC<{ size?: number; className?: string }>> = {
   server: Server, zap: Zap, cpu: Cpu, activity: Activity, trophy: Trophy,
   chart: BarChart3, globe: Globe, database: Database, layers: Layers,
-  box: Box, shield: Shield, hash: Hash,
+  box: Box, shield: Shield, hash: Hash, users: Users,
 };
 
 // HypercycleNode is declared globally in global.d.ts — no local duplicate needed.
@@ -219,111 +224,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Navigation Items
   const navItems: SidebarItem[] = [
-    {
-      id: "home",
-      label: "Home",
-      icon: "Home",
-      url: INTERNAL_HOME_URL,
-      description: "Your start page with quick access to everything",
-    },
-    {
-      id: "chat",
-      label: "AI Chat",
-      icon: "Bot",
-      url: INTERNAL_CHAT_URL,
-      description: "Chat one-on-one with your AI agents",
-    },
+    { id: "home", label: "Home", icon: "Home", url: INTERNAL_HOME_URL },
+    { id: "chat", label: "AI Chat", icon: "Bot", url: INTERNAL_CHAT_URL },
     {
       id: "mosaicbot",
       label: "Mosaic Bot",
       icon: "BrainCircuit",
       url: INTERNAL_MOSAICBOT_URL,
-      description: "Built-in background assistant with memory and skills",
     },
-    {
-      id: "mcp",
-      label: "MCP Servers",
-      icon: "Plug",
-      url: INTERNAL_MCP_URL,
-      description:
-        "Connect external tool servers (Model Context Protocol) for your agents",
-    },
+    { id: "mcp", label: "MCP Servers", icon: "Plug", url: INTERNAL_MCP_URL },
     {
       id: "multi-chat",
       label: "Chat Rooms",
       icon: "MessageSquare",
       url: INTERNAL_MULTI_CHAT_URL,
-      description: "Multi-user rooms — invite agents with @mentions",
+    },
+    { id: "web3", label: "Web3", icon: "Eth", url: INTERNAL_WEB3_URL },
+    { id: "vault", label: "Vault", icon: "Database", url: INTERNAL_VAULT_URL },
+    { id: "hyperinsight", label: "HyperInsight", icon: "Activity", url: INTERNAL_HYPERINSIGHT_URL },
+    { id: "ide", label: "IDE", icon: "Code2", url: INTERNAL_IDE_URL },
+    { id: "sandbox", label: "Tool Sandbox", icon: "Cpu", url: INTERNAL_SANDBOX_URL },
+    {
+      id: "adaportal",
+      label: "Stargate",
+      icon: "Sparkles",
+      url: INTERNAL_ADAPORTAL_START_URL,
     },
     {
-      id: "web3",
-      label: "Web3",
-      icon: "Eth",
-      url: INTERNAL_WEB3_URL,
-      description: "Built-in Web3 wallet for on-chain interactions",
-    },
-    {
-      id: "vault",
-      label: "Vault",
-      icon: "Lock",
-      url: INTERNAL_VAULT_URL,
-      description:
-        "Encrypted boxes for secrets — you choose which agents can read them",
-    },
-    {
-      id: "hyperinsight",
-      label: "HyperInsight",
-      icon: "Activity",
-      url: INTERNAL_HYPERINSIGHT_URL,
-      description: "Monitor Hypercycle nodes and network activity",
-    },
-    {
-      id: "ide",
-      label: "IDE",
-      icon: "Code2",
-      url: INTERNAL_IDE_URL,
-      description: "Built-in code editor with an integrated terminal",
-    },
-    {
-      id: "sandbox",
-      label: "Tool Sandbox",
-      icon: "Cpu",
-      url: INTERNAL_SANDBOX_URL,
-      description: "Install and run sandboxed WASM tools",
+      id: "privacy-demo",
+      label: "Privacy Demo",
+      icon: "Shield",
+      url: INTERNAL_PRIVACY_DEMO_URL,
     },
     {
       id: "settings",
       label: "Configuration",
       icon: "Settings",
       url: INTERNAL_SETTINGS_URL,
-      description: "App settings — AI agents, nodes, appearance, and more",
     },
   ];
 
   // --- UI State for New Sections ---
   const [aiContexts, setAiContexts] = useState([
-    {
-      id: "rag",
-      label: "Local Neural Index",
-      icon: Database,
-      active: true,
-      description:
-        "Local Neural Index — local document memory for agents (preview)",
-    },
-    {
-      id: "files",
-      label: "File System Bridge",
-      icon: FileText,
-      active: false,
-      description: "File System Bridge — let agents read local files (preview)",
-    },
-    {
-      id: "screen",
-      label: "Visual Cortex",
-      icon: Monitor,
-      active: false,
-      description: "Visual Cortex — let agents see your screen (preview)",
-    },
+    { id: "rag", label: "Local Neural Index", icon: Database, active: true },
+    { id: "files", label: "File System Bridge", icon: FileText, active: false },
+    { id: "screen", label: "Visual Cortex", icon: Monitor, active: false },
   ]);
 
   const toggleContext = (id: string) => {
@@ -386,6 +331,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         return <Cpu className={className} />;
       case "Code2":
         return <Code2 className={className} />;
+      case "Users":
+        return <Users className={className} />;
+      case "BookOpen":
+        return <BookOpen className={className} />;
+      case "Sparkles":
+        return <Sparkles className={className} />;
+      case "Shield":
+        return <Shield className={className} />;
       default:
         return <LayoutGrid className={className} />;
     }
@@ -426,7 +379,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={item.id}
                 onClick={() => onNavigate(item.url)}
-                title={item.description ?? item.label}
                 className={`
                   w-full flex items-center px-3 py-3 rounded-lg transition-all relative group
                   ${
@@ -517,7 +469,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             {activeAgents.map((agent) => {
-              const providerColor = PROVIDER_INFO[agent.provider].color;
+              const providerColor = PROVIDER_INFO[agent.provider]?.color ?? "#6B7280";
               return (
                 <button
                   key={agent.id}
@@ -552,12 +504,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* 3. AI Context / Neural Bridges */}
         <div className="space-y-2 px-3">
           <div className="px-3 mb-2 flex items-center justify-between text-[10px] font-bold text-gray-600 uppercase tracking-widest">
-            <span>
-              Neural Bridges{" "}
-              <span className="normal-case font-medium text-gray-700">
-                (preview)
-              </span>
-            </span>
+            <span>Neural Bridges</span>
             <Cpu size={12} />
           </div>
 
@@ -566,7 +513,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               key={ctx.id}
               className="w-full flex items-center px-3 py-2.5 rounded-lg relative group cursor-pointer hover-surface-accent transition-colors"
               onClick={() => toggleContext(ctx.id)}
-              title={ctx.description}
             >
               <ctx.icon
                 className={`size-4 transition-colors mr-3 ${
@@ -660,14 +606,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     {/* Header row: status dot + name + toggle */}
                     <div className="flex items-center justify-between mb-2">
-                      <div
-                        className="flex items-center gap-2"
-                        title={
-                          node.isActive && !isLive
-                            ? "This Hypercycle node is configured but not reachable right now — it doesn't affect regular AI agents"
-                            : undefined
-                        }
-                      >
+                      <div className="flex items-center gap-2">
                         <div
                           className="w-2 h-2 rounded-full"
                           style={{

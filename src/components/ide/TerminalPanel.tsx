@@ -13,7 +13,6 @@ interface TerminalPanelProps {
   onAddTerminal: (id: string, title: string) => void;
   onRemoveTerminal: (id: string) => void;
   onSetActive: (id: string) => void;
-  visible: boolean;
 }
 
 export interface TerminalPanelHandle {
@@ -29,7 +28,7 @@ interface TerminalEntry {
 
 const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>(
   function TerminalPanel(
-    { projectPath, terminals, activeTerminalId, onAddTerminal, onRemoveTerminal, onSetActive, visible },
+    { projectPath, terminals, activeTerminalId, onAddTerminal, onRemoveTerminal, onSetActive },
     ref,
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -146,29 +145,12 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>(
       return () => observer.disconnect();
     }, [activeTerminalId]);
 
-    // Create first terminal when panel first becomes visible
+    // Create first terminal automatically
     useEffect(() => {
-      if (terminals.length === 0 && projectPath && visible) {
+      if (terminals.length === 0 && projectPath) {
         createTerminal();
       }
-    }, [projectPath, visible]);
-
-    // Refit and refocus when panel is shown after being hidden
-    useEffect(() => {
-      if (!visible || !activeTerminalId) return;
-      const entry = termEntriesRef.current.get(activeTerminalId);
-      if (!entry || !containerRef.current) return;
-      requestAnimationFrame(() => {
-        try {
-          entry.fitAddon.fit();
-          const dims = entry.fitAddon.proposeDimensions();
-          if (dims) {
-            window.electronAPI.ide.pty.resize(activeTerminalId, dims.cols, dims.rows);
-          }
-        } catch {}
-        entry.xterm.focus();
-      });
-    }, [visible, activeTerminalId]);
+    }, [projectPath]);
 
     const destroyTerminal = useCallback(
       (id: string) => {

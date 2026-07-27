@@ -11,14 +11,12 @@ interface ChatClientOptions {
   url: string;
   username: string;
   isAgent?: boolean;
-  token?: string;
 }
 
 export class ChatClient extends EventEmitter {
   private url: string;
   private username: string;
   private isAgent: boolean;
-  private token?: string;
   private ws: WebSocket | null = null;
   private reconnectDelay = BASE_RECONNECT_DELAY;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -33,7 +31,6 @@ export class ChatClient extends EventEmitter {
     this.url = opts.url;
     this.username = opts.username;
     this.isAgent = opts.isAgent ?? false;
-    this.token = opts.token;
   }
 
   connect(): void {
@@ -55,7 +52,7 @@ export class ChatClient extends EventEmitter {
     this.ws.on("open", () => {
       this.reconnectDelay = BASE_RECONNECT_DELAY;
       this._connected = true;
-      this.send({ type: "auth", username: this.username, isAgent: this.isAgent, token: this.token });
+      this.send({ type: "auth", username: this.username, isAgent: this.isAgent });
       this._startPing();
     });
 
@@ -147,10 +144,6 @@ export class ChatClient extends EventEmitter {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
-  }
-
-  setToken(token: string): void {
-    this.token = token;
   }
 
   /** Manually track a room as joined (for rooms joined via external send calls). */

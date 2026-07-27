@@ -1,11 +1,8 @@
 // forge.config.js
 import dotenv from 'dotenv';
-import { readFileSync } from 'fs';
 
 dotenv.config({ path: '.env' });
 dotenv.config({ path: '.env.local', override: true });
-
-const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
 /**
  * Generates the Linux AppImage wrapper script for sandbox auto-detection.
@@ -88,7 +85,11 @@ export default {
         }
     },
 
-    rebuildConfig: {},
+    rebuildConfig: {
+        force: false,
+        onlyModules: []
+    },
+    skipNativeRebuild: true,
 
     makers: [
         {
@@ -99,10 +100,7 @@ export default {
                 authors: 'hypercycle',
                 description: 'Mosaic Companion Application',
                 loadingGif: 'assets/loading.gif',
-                setupIcon: 'assets/icon.ico',
-                // No spaces in the artifact name: GitHub Releases renames
-                // assets containing spaces, which would break download links.
-                setupExe: `mosaic-companion-${pkg.version}-Setup.exe`
+                setupIcon: 'assets/icon.ico'
             }
         },
         {
@@ -150,23 +148,6 @@ export default {
 
     publishers: [
         {
-            // Primary release channel: GitHub Releases. The release workflow
-            // selects publishers explicitly via `--target`; releases are
-            // created as drafts and published by the workflow's finalize job
-            // once every platform's assets are verified present.
-            name: '@electron-forge/publisher-github',
-            config: {
-                repository: {
-                    owner: 'hypercycle-development',
-                    name: 'mosaic-companion'
-                },
-                draft: true,
-                tagPrefix: 'v'
-            }
-        },
-        {
-            // Legacy channel: pre-0.1.8 installs check S3 for updates.
-            // Used only when the release workflow runs with also_publish_s3.
             name: '@electron-forge/publisher-s3',
             config: {
                 bucket: 'mosaic-release',
