@@ -50,7 +50,6 @@ import {
   INTERNAL_TOOL_PANEL_PREFIX,
   INTERNAL_ADAPORTAL_START_URL,
   INTERNAL_MULTIAGENT_URL,
-  INTERNAL_PRIVACY_DEMO_URL,
 } from "../types/types";
 import { AIAgentConfig, PROVIDER_INFO } from "../types/ai";
 import { NodeDetailPanel } from "../../plugins/hyperinsight/renderer/components/NodeDetailPanel";
@@ -249,12 +248,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: "Stargate",
       icon: "Sparkles",
       url: INTERNAL_ADAPORTAL_START_URL,
-    },
-    {
-      id: "privacy-demo",
-      label: "Privacy Demo",
-      icon: "Shield",
-      url: INTERNAL_PRIVACY_DEMO_URL,
     },
     {
       id: "settings",
