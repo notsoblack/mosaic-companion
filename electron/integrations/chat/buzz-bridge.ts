@@ -37,12 +37,10 @@ async function loadSchnorr() {
     // Inject SHA-256 and HMAC-SHA256 into noble hashes (required for signing in v2)
     const { sha256 } = await import("@noble/hashes/sha256");
     const { hmac } = await import("@noble/hashes/hmac");
-    const hmacSha256 = (key: Uint8Array, msgs: Uint8Array[]) => {
-      const hm = hmac.create(sha256, key);
-      for (const msg of msgs) hm.update(msg);
-      return hm.digest();
+    const hmacSha256 = (key: Uint8Array, message: Uint8Array) => {
+      return hmac(sha256, key, message);
     };
-    noble.hashes.sha256 = sha256 as any;
+    (noble.hashes as any).sha256 = sha256;
     (noble.hashes as any).hmacSha256 = hmacSha256;
     schnorrModule = noble;
   } catch {
@@ -273,6 +271,7 @@ export class ChatBuzzBridge {
   private config: BridgeConfig;
   private _initPromise?: Promise<void>;
   private connecting = false;
+  private keypair?: { pubkey: string; privkey: Uint8Array };
 
   constructor() {
     this.config = this._loadConfig();
@@ -308,7 +307,37 @@ export class ChatBuzzBridge {
     return new Uint8Array(randomBytes(32));
   }
 
-  private loadOrCreateKey(): { pubkey: string; privkey: Uint8Array } {
+  private _decodeNsec(nsec: string): string | null {
+    try {
+      const { bech32 } = require("bech32");
+      const decoded = bech32.decode(nsec);
+      const data = bech32.fromWords(decoded.words);
+      return bytesToHex(Uint8Array.from(data));
+    } catch {
+      return null;
+    }
+  }
+
+  private async _derivePubkey(priv: Uint8Array): Promise<string> {
+    const schnorr = await loadSchnorr();
+    try {
+      if (schnorr?.getPublicKey) {
+        const pub = schnorr.getPublicKey(priv, true);
+        return bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub)).slice(2); // x-only
+      }
+      if (schnorr?.schnorr?.getPublicKey) {
+        const pub = schnorr.schnorr.getPublicKey(priv);
+        return bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub)).slice(2); // x-only
+      }
+    } catch (e) {
+      console.error("[ChatBuzzBridge] Failed to derive pubkey:", e);
+    }
+    return bytesToHex(priv); // fallback
+  }
+
+  private async loadOrCreateKey(): Promise<{ pubkey: string; privkey: Uint8Array }> {
+    if (this.keypair) return this.keypair;
+
     // 1. Try real identity from mosaic-companion buzz-bridge
     try {
       if (fs.existsSync(REAL_IDENTITY_FILE)) {
@@ -320,9 +349,10 @@ export class ChatBuzzBridge {
             : parsed.privkey;
           if (privHex) {
             const priv = hexToBytes(privHex);
-            const pubkey = this._derivePubkey(priv);
+            const pubkey = await this._derivePubkey(priv);
             console.log("[ChatBuzzBridge] Using real identity key:", pubkey.slice(0, 16) + "...");
-            return { pubkey, privkey: priv };
+            this.keypair = { pubkey, privkey: priv };
+            return this.keypair;
           }
         }
       }
@@ -337,8 +367,9 @@ export class ChatBuzzBridge {
         const parsed = JSON.parse(raw);
         if (parsed.privkey) {
           const priv = hexToBytes(parsed.privkey);
-          const pubkey = this._derivePubkey(priv);
-          return { pubkey, privkey: priv };
+          const pubkey = await this._derivePubkey(priv);
+          this.keypair = { pubkey, privkey: priv };
+          return this.keypair;
         }
       }
     } catch (e) {
@@ -347,7 +378,7 @@ export class ChatBuzzBridge {
 
     // 3. Generate new key
     const priv = this._generateRandomKey();
-    const pubkey = this._derivePubkey(priv);
+    const pubkey = await this._derivePubkey(priv);
     const keyData = { pubkey, privkey: bytesToHex(priv), created: new Date().toISOString() };
     try {
       if (!fs.existsSync(BRIDGE_DIR)) fs.mkdirSync(BRIDGE_DIR, { recursive: true });
@@ -356,34 +387,8 @@ export class ChatBuzzBridge {
     } catch (e) {
       console.error("[ChatBuzzBridge] Failed to save key:", e);
     }
-    return { pubkey, privkey: priv };
-  }
-
-  private _decodeNsec(nsec: string): string | null {
-    try {
-      const { bech32 } = require("bech32");
-      const decoded = bech32.decode(nsec);
-      const data = bech32.fromWords(decoded.words);
-      return bytesToHex(Uint8Array.from(data));
-    } catch {
-      return null;
-    }
-  }
-
-  private _derivePubkey(priv: Uint8Array): string {
-    try {
-      if (schnorrModule?.getPublicKey) {
-        const pub = schnorrModule.getPublicKey(priv, true);
-        return bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub)).slice(2); // x-only
-      }
-      if (schnorrModule?.schnorr?.getPublicKey) {
-        const pub = schnorrModule.schnorr.getPublicKey(priv);
-        return bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub)).slice(2); // x-only
-      }
-    } catch (e) {
-      console.error("[ChatBuzzBridge] Failed to derive pubkey:", e);
-    }
-    return bytesToHex(priv); // fallback
+    this.keypair = { pubkey, privkey: priv };
+    return this.keypair;
   }
 
   async init(): Promise<void> {
@@ -420,7 +425,7 @@ export class ChatBuzzBridge {
 
     this.connecting = true;
     try {
-      const key = this.loadOrCreateKey();
+      const key = await this.loadOrCreateKey();
       this.relay = new BuzzRelayClient(this.config.relayUrl, key.pubkey, key.privkey);
       await this.relay.connect();
       console.log(`[ChatBuzzBridge] Connected to ${this.config.relayUrl} as ${key.pubkey.slice(0, 16)}…`);
@@ -446,7 +451,7 @@ export class ChatBuzzBridge {
       }
 
       const priv = hexToBytes(privHex);
-      const pubkey = this._derivePubkey(priv);
+      const pubkey = await this._derivePubkey(priv);
 
       const keyData = {
         pubkey,
@@ -465,6 +470,7 @@ export class ChatBuzzBridge {
         this.relay.disconnect();
         this.relay = undefined;
       }
+      this.keypair = undefined; // force reload with new key
       await this.init();
 
       return { success: true, npub: pubkey };
@@ -478,7 +484,7 @@ export class ChatBuzzBridge {
       throw new Error("Relay not ready — cannot dispatch. Check connection status.");
     }
 
-    const agentKey = this._getAgentKey(agentId);
+    const agentKey = await this._getAgentKey(agentId);
     if (!agentKey) {
       throw new Error(`Agent key not found for ${agentId}. Ensure agent has a Nostr keypair.`);
     }
@@ -503,11 +509,11 @@ export class ChatBuzzBridge {
     }
   }
 
-  private _getAgentKey(agentId: string): { pubkey: string; privkey: Uint8Array } | null {
-    const bridgeKey = this.loadOrCreateKey();
+  private async _getAgentKey(agentId: string): Promise<{ pubkey: string; privkey: Uint8Array } | null> {
+    const bridgeKey = await this.loadOrCreateKey();
     const seed = sha256(bytesToHex(bridgeKey.privkey) + agentId);
     const priv = hexToBytes(seed);
-    const pubkey = this._derivePubkey(priv);
+    const pubkey = await this._derivePubkey(priv);
     return { pubkey, privkey: priv };
   }
 
@@ -542,7 +548,7 @@ export class ChatBuzzBridge {
     return {
       enabled: this.config.enabled,
       connected: this.relay?.isReady() ?? false,
-      npub: this.relay ? this.loadOrCreateKey().pubkey : undefined,
+      npub: this.keypair?.pubkey ?? (this.relay ? undefined : undefined),
       relayUrl: this.config.relayUrl,
       lastError: this.relay?.lastError,
     };
