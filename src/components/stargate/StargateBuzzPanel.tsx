@@ -302,6 +302,35 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
                 <Save size={12} /> {savingConfig ? "Saving…" : "Save Config"}
               </button>
             </div>
+            {/* nsec import inside config */}
+            <div className="mt-4 pt-3 border-t border-gray-700">
+              <label className="text-xs text-gray-400 mb-1 block">Nostr Private Key (nsec or hex)</label>
+              <div className="flex gap-2">
+                <input
+                  type={showNsec ? "text" : "password"}
+                  value={importNsec}
+                  onChange={e => setImportNsec(e.target.value)}
+                  placeholder="nsec1… or hex"
+                  className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  onClick={() => setShowNsec(!showNsec)}
+                  className="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-white"
+                  title={showNsec ? "Hide" : "Show"}
+                >
+                  {showNsec ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+                <button
+                  onClick={handleImportKey}
+                  className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white text-sm rounded-lg flex items-center gap-1.5"
+                >
+                  <Import size={14} /> Import Key
+                </button>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                Export your nsec from the Windows Buzz Desktop and paste it here to authenticate with private relays.
+              </div>
+            </div>
           </div>
         )}
 
