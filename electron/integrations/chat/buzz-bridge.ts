@@ -33,7 +33,18 @@ let schnorrModule: any = null;
 async function loadSchnorr() {
   if (schnorrModule) return schnorrModule;
   try {
-    schnorrModule = await import("@noble/secp256k1");
+    const noble = await import("@noble/secp256k1");
+    // Inject SHA-256 and HMAC-SHA256 into noble hashes (required for signing in v2)
+    const { sha256 } = await import("@noble/hashes/sha256");
+    const { hmac } = await import("@noble/hashes/hmac");
+    const hmacSha256 = (key: Uint8Array, msgs: Uint8Array[]) => {
+      const hm = hmac.create(sha256, key);
+      for (const msg of msgs) hm.update(msg);
+      return hm.digest();
+    };
+    noble.hashes.sha256 = sha256 as any;
+    (noble.hashes as any).hmacSha256 = hmacSha256;
+    schnorrModule = noble;
   } catch {
     try {
       const pkg = await import("secp256k1");
