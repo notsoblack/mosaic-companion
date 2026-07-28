@@ -205,7 +205,10 @@ class BuzzRelayClient extends EventEmitter {
         return;
       }
 
-      if (cmd === "AUTH" && payload === "OK") {
+      // NIP-42 success: relay may send ["AUTH", "OK"] or ["OK", eventId, true]
+      const isAuthOk = cmd === "AUTH" && payload === "OK";
+      const isEventOkAuth = cmd === "OK" && parsed.length >= 3 && parsed[2] === true && this.pendingAuth;
+      if (isAuthOk || isEventOkAuth) {
         this.isReadyFlag = true;
         this.lastError = undefined;
         if (this.pendingAuth) {
@@ -213,7 +216,10 @@ class BuzzRelayClient extends EventEmitter {
           this.pendingAuth = undefined;
         }
         this.emit("ready");
-      } else if (cmd === "AUTH" && typeof payload === "string" && payload.startsWith("restricted:")) {
+        return;
+      }
+
+      if (cmd === "AUTH" && typeof payload === "string" && payload.startsWith("restricted:")) {
         this.isReadyFlag = false;
         this.lastError = payload;
         if (this.pendingAuth) {
