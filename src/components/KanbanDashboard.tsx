@@ -155,6 +155,31 @@ export const KanbanDashboard: React.FC = () => {
     load();
   }, []);
 
+
+  // Listen for Buzz job responses and add to chat feed
+  useEffect(() => {
+    const unsubscribe = (window as any).chatAPI?.onBuzzJobResponse?.((data: { jobId: string; response: any }) => {
+      console.log('[KanbanDashboard] Buzz job response:', data);
+      
+      const buzzResponse: AgentResponse = {
+        id: 'buzz-' + data.jobId + '-' + Date.now(),
+        agentName: 'Buzz Agent',
+        agentId: data.response?.jobData?.agentId || 'buzz',
+        provider: 'generic',
+        content: 'Response to job ' + data.jobId.slice(0, 8) + '...: ' + (data.response?.event?.content?.slice(0, 100) || 'Received'),
+        status: 'success',
+        timestamp: Date.now(),
+        column: 'running',
+      };
+      
+      addResponse(buzzResponse);
+    });
+    
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [addResponse]);
+
   // Detect local AIMs via HyperCycle node API (8000/info) and direct health (9000/health)
   useEffect(() => {
     const probeLocalAIMs = async () => {
