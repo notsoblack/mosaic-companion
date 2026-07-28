@@ -109,7 +109,7 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
       
       // Check if this message is for our channel
       const eventChannelTag = event.tags?.find((t: string[]) => t[0] === "h")?.[1];
-      if (eventChannelTag && eventChannelTag !== channelUuid) {
+      if (eventChannelTag && eventChannelTag !== selectedChannelTag) {
         return; // Skip messages from other channels
       }
       

@@ -646,7 +646,7 @@ async function handleTool(name, args) {
         ],
       };
     }
-n    case "stargate_get_fleet_status": {
+    case "stargate_get_fleet_status": {
       // Mock fleet status for now - would integrate with FleetDiscoveryService
       return {
         content: [{

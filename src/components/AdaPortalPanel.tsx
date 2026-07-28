@@ -20,8 +20,6 @@ declare global {
 }
 
 import {
-  Globe,
-  Target, 
   initializeAdaPortal,
   agentMarketplace,
   leaderboard,
@@ -78,9 +76,9 @@ import StargateTelemetryCard from './stargate/StargateTelemetryCard';
 import StargateCommunityAIMPanel from './stargate/StargateCommunityAIMPanel';
 import MidnightCityCommandPanel from './stargate/MidnightCityCommandPanel';
 import StargateBuzzPanel from './stargate/StargateBuzzPanel';
-import AgentJobsPanel from './stargate/AgentJobsPanel';
-import StargateNavigatorPanel from './stargate/StargateNavigatorPanel';
-import { Users, Trophy, GraduationCap, Package, Cpu, Zap, Star, ArrowRight, Search, Filter, RefreshCw, TrendingUp, CheckCircle, XCircle, Loader, Rocket, TrendingUpIcon, Code, Bot, Workflow, Sparkles, Settings, CpuIcon, LayoutDashboard, Wallet, Key, Building2, FolderOutput, Network, Shield, Lock,  Unlock, Layers, Server, Plus, BookOpen, Download, Wand2, ImagePlus, Pickaxe, Info, MessageSquare } from 'lucide-react';
+import { AgentJobsPanel } from './stargate/AgentJobsPanel';
+import { StargateNavigatorPanel } from './stargate/StargateNavigatorPanel';
+import { Users, Trophy, GraduationCap, Package, Cpu, Zap, Star, ArrowRight, Search, Filter, RefreshCw, TrendingUp, CheckCircle, XCircle, Loader, Rocket, TrendingUpIcon, Code, Bot, Workflow, Sparkles, Settings, CpuIcon, LayoutDashboard, Wallet, Key, Building2, FolderOutput, Network, Shield, Lock, Unlock, Layers, Server, Plus, BookOpen, Download, Wand2, ImagePlus, Pickaxe, Info, MessageSquare, Globe, Target } from 'lucide-react';
 
 // ---- Module-level helper: ensure wallet is on Base chain ----
 async function ensureOnBaseChain(): Promise<void> {
@@ -107,7 +105,7 @@ interface AdaPortalPanelProps {
   onNavigateToChat?: (message: string) => void;
 }
 
-type TabId = 'start' | 'marketplace' | 'aims' | 'leaderboard' | 'training' | 'packages' | 'skills' | 'compute' | 'dashboard' | 'stargate' | 'midnight' | 'buzz' | 'asp';
+type TabId = 'start' | 'marketplace' | 'aims' | 'leaderboard' | 'training' | 'packages' | 'skills' | 'compute' | 'dashboard' | 'stargate' | 'midnight' | 'buzz' | 'asp' | 'jobs' | 'navigator';
 type LeaderboardPeriod = 'daily' | 'weekly' | 'all_time';
 type ComputeTier = 'standard' | 'high_performance' | 'dedicated';
 

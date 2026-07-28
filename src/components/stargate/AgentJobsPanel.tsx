@@ -63,6 +63,7 @@ export const AgentJobsPanel: React.FC<AgentJobsPanelProps> = ({
   const [newTask, setNewTask] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const [newPriority, setNewPriority] = useState<JobPriority>('medium');
+  const [newAgentId, setNewAgentId] = useState("");
   const [selectedAgent, setSelectedAgent] = useState("");
   const [selectedChannel, setSelectedChannel] = useState("hpec-stargate");
 
@@ -226,4 +227,39 @@ export const AgentJobsPanel: React.FC<AgentJobsPanelProps> = ({
                 <option value="low">Low Priority</option>
                 <option value="medium">Medium Priority</option>
                 <option value="high">High Priority</option>
+              </select>
+
+              <select
+                value={newAgentId}
+                onChange={(e) => setNewAgentId(e.target.value)}
+                className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-violet-500"
+              >
+                <option value="">Select agent...</option>
+                {userAgents.map(a => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+
+              <button
+                onClick={() => {
+                  if (newTask.trim() && newAgentId) {
+                    (window as any).chatAPI?.buzzDispatch?.(newAgentId, newTask.trim(), "hpec-stargate");
+                    setNewTask("");
+                    setNewDescription("");
+                    setNewAgentId("");
+                    setShowNewJob(false);
+                  }
+                }}
+                disabled={!newTask.trim() || !newAgentId}
+                className="px-3 py-2 bg-violet-600 hover:bg-violet-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg transition-colors"
+              >
+                Dispatch
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
     
