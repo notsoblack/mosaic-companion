@@ -33,22 +33,28 @@ let schnorrModule: any = null;
 async function loadSchnorr() {
   if (schnorrModule) return schnorrModule;
   try {
-    const noble = await import("@noble/secp256k1");
-    // Inject SHA-256 and HMAC-SHA256 into noble hashes (required for signing in v2)
-    const { sha256 } = await import("@noble/hashes/sha256");
-    const { hmac } = await import("@noble/hashes/hmac");
-    const hmacSha256 = (key: Uint8Array, message: Uint8Array) => {
-      return hmac(sha256, key, message);
-    };
-    (noble.hashes as any).sha256 = sha256;
-    (noble.hashes as any).hmacSha256 = hmacSha256;
-    schnorrModule = noble;
+    // Prefer @noble/curves (works out-of-the-box, no hash injection needed)
+    const curves = await import("@noble/curves/secp256k1");
+    schnorrModule = curves;
   } catch {
+    // Fallback to @noble/secp256k1 with manual hash injection
     try {
-      const pkg = await import("secp256k1");
-      schnorrModule = pkg;
+      const noble = await import("@noble/secp256k1");
+      const { sha256 } = await import("@noble/hashes/sha256");
+      const { hmac } = await import("@noble/hashes/hmac");
+      const hmacSha256 = (key: Uint8Array, message: Uint8Array) => {
+        return hmac(sha256, key, message);
+      };
+      (noble.hashes as any).sha256 = sha256;
+      (noble.hashes as any).hmacSha256 = hmacSha256;
+      schnorrModule = noble;
     } catch {
-      schnorrModule = null;
+      try {
+        const pkg = await import("secp256k1");
+        schnorrModule = pkg;
+      } catch {
+        schnorrModule = null;
+      }
     }
   }
   return schnorrModule;
@@ -134,7 +140,8 @@ class BuzzRelayClient extends EventEmitter {
       };
 
       this.ws!.on("open", () => {
-        this._sendAuth();
+        // NIP-42: wait for relay to send ["AUTH", challenge] before responding
+        console.log("[ChatBuzzBridge] WebSocket open — awaiting NIP-42 challenge...");
       });
 
       this.ws!.on("message", (data: any) => {
@@ -175,10 +182,28 @@ class BuzzRelayClient extends EventEmitter {
   }
 
   private _handleMessage(msg: string) {
+    console.log("[ChatBuzzBridge] RAW relay msg:", msg.slice(0, 200));
     try {
       const parsed = JSON.parse(msg);
       if (!Array.isArray(parsed)) return;
       const [cmd, payload] = parsed;
+
+      // NIP-42 challenge: relay sends ["AUTH", "challenge_string"]
+      if (cmd === "AUTH" && typeof payload === "string" && payload !== "OK" && !payload.startsWith("restricted:")) {
+        console.log("[ChatBuzzBridge] Got NIP-42 challenge:", payload.slice(0, 16) + "...");
+        const event = {
+          kind: 22242,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [
+            ["relay", this.relayUrl],
+            ["challenge", payload],
+          ],
+          content: "",
+          pubkey: this.pubkey,
+        };
+        this._signAndSend("AUTH", event);
+        return;
+      }
 
       if (cmd === "AUTH" && payload === "OK") {
         this.isReadyFlag = true;
@@ -221,11 +246,12 @@ class BuzzRelayClient extends EventEmitter {
     ]);
     const id = sha256(eventJson);
     let sig: string;
-    if (schnorr.sign) {
-      const sigBytes = await schnorr.sign(hexToBytes(id), this.privkey);
+    // Prefer @noble/curves API
+    if (schnorr.schnorr?.sign) {
+      const sigBytes = schnorr.schnorr.sign(hexToBytes(id), this.privkey);
       sig = bytesToHex(sigBytes instanceof Uint8Array ? sigBytes : new Uint8Array(sigBytes));
-    } else if (schnorr.schnorr?.sign) {
-      const sigBytes = await schnorr.schnorr.sign(hexToBytes(id), this.privkey);
+    } else if (schnorr.sign) {
+      const sigBytes = await schnorr.sign(hexToBytes(id), this.privkey);
       sig = bytesToHex(sigBytes instanceof Uint8Array ? sigBytes : new Uint8Array(sigBytes));
     } else {
       throw new Error("Schnorr module missing sign function");
@@ -321,13 +347,17 @@ export class ChatBuzzBridge {
   private async _derivePubkey(priv: Uint8Array): Promise<string> {
     const schnorr = await loadSchnorr();
     try {
-      if (schnorr?.getPublicKey) {
-        const pub = schnorr.getPublicKey(priv, true);
-        return bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub)).slice(2); // x-only
-      }
+      // @noble/curves — getPublicKey returns 32-byte x-only directly
       if (schnorr?.schnorr?.getPublicKey) {
         const pub = schnorr.schnorr.getPublicKey(priv);
-        return bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub)).slice(2); // x-only
+        const hex = bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub));
+        return hex.length === 64 ? hex : hex.slice(2); // safety: only slice if compressed
+      }
+      // @noble/secp256k1 — getPublicKey returns 33-byte compressed
+      if (schnorr?.getPublicKey) {
+        const pub = schnorr.getPublicKey(priv, true);
+        const hex = bytesToHex(pub instanceof Uint8Array ? pub : new Uint8Array(pub));
+        return hex.slice(2); // strip 02/03 prefix → x-only
       }
     } catch (e) {
       console.error("[ChatBuzzBridge] Failed to derive pubkey:", e);
