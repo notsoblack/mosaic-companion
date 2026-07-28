@@ -91,6 +91,8 @@ class BuzzRelayClient extends EventEmitter {
   private ws?: any;
   public isReadyFlag = false;
   public lastError?: string;
+  private subscriptions: Map<string, { filter: any; callback: (event: any) => void }> = new Map();
+  private subCounter = 0;
   private pendingAuth?: {
     resolve: (v: boolean) => void;
     reject: (e: Error) => void;
@@ -215,6 +217,8 @@ class BuzzRelayClient extends EventEmitter {
           this.pendingAuth.resolve(true);
           this.pendingAuth = undefined;
         }
+        // Re-subscribe to any active subscriptions after auth success
+        this._resubscribeAll();
         this.emit("ready");
         return;
       }
@@ -231,6 +235,18 @@ class BuzzRelayClient extends EventEmitter {
         this.emit("event-ok", payload);
       } else if (cmd === "NOTICE") {
         this.emit("notice", payload);
+      } else if (cmd === "EVENT" && Array.isArray(payload)) {
+        // Relay is sending us an event we subscribed to
+        const [, eventData] = payload;
+        if (eventData && typeof eventData === "object") {
+          this.emit("relay-event", eventData);
+          // Also call specific subscription callbacks
+          for (const [, sub] of this.subscriptions) {
+            if (sub.callback) {
+              try { sub.callback(eventData); } catch {}
+            }
+          }
+        }
       }
     } catch {
       // Ignore non-JSON messages
@@ -280,6 +296,30 @@ class BuzzRelayClient extends EventEmitter {
     await this._signAndSend("EVENT", event);
   }
 
+  // Subscribe to events on the relay (for bidirectional sync)
+  subscribe(filter: { kinds?: number[]; channels?: string[]; since?: number }, callback: (event: any) => void): string {
+    const subId = `sub-${++this.subCounter}-${Date.now()}`;
+    this.subscriptions.set(subId, { filter, callback });
+    
+    if (this.isReady() && this.ws) {
+      const reqFilter: any = {};
+      if (filter.kinds) reqFilter.kinds = filter.kinds;
+      if (filter.channels) reqFilter["#h"] = filter.channels;
+      if (filter.since) reqFilter.since = filter.since;
+      
+      this.ws.send(JSON.stringify(["REQ", subId, reqFilter]));
+    }
+    
+    return subId;
+  }
+
+  unsubscribe(subId: string): void {
+    if (this.subscriptions.has(subId) && this.ws) {
+      this.ws.send(JSON.stringify(["CLOSE", subId]));
+    }
+    this.subscriptions.delete(subId);
+  }
+
   disconnect() {
     this._cleanupPendingAuth();
     this.isReadyFlag = false;
@@ -293,6 +333,18 @@ class BuzzRelayClient extends EventEmitter {
     if (this.pendingAuth) {
       clearTimeout(this.pendingAuth.timeout);
       this.pendingAuth = undefined;
+    }
+  }
+
+  // Re-subscribe all active subscriptions after reconnect
+  private _resubscribeAll(): void {
+    if (!this.isReady() || !this.ws) return;
+    for (const [subId, sub] of this.subscriptions) {
+      const reqFilter: any = {};
+      if (sub.filter.kinds) reqFilter.kinds = sub.filter.kinds;
+      if (sub.filter.channels) reqFilter["#h"] = sub.filter.channels;
+      if (sub.filter.since) reqFilter.since = sub.filter.since;
+      this.ws.send(JSON.stringify(["REQ", subId, reqFilter]));
     }
   }
 }
@@ -527,16 +579,36 @@ export class ChatBuzzBridge {
 
     try {
       const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const content = JSON.stringify({
-        type: "agent-deploy",
-        agentId,
-        task,
-        channelTag,
-        jobId,
-        timestamp: Date.now(),
-      });
 
-      await this.relay.publishEvent(30078, [["h", channelTag]], content);
+      // Post as plain text channel message (not JSON) so Buzz agents can read it
+      // as a normal mention. Include p tags for all known Buzz agent pubkeys so
+      // the relay's require_mention filter matches for at least one agent.
+      const content = task;
+
+      // Known Buzz agent pubkeys — add p tags so agents with require_mention pick it up
+      const buzzAgentPubkeys = [
+        "069257d83287b0ab9d9997f80d5b198580179b9fe4e972ae80202f8a56fd8c93", // Goose
+        "1dfd7a34d429125979e1e0c94adb275b1aceded8e54b5162e2ecad0d4142c241", // Fizz
+        "8cdbbd13191cf99658fa7d081debabcd1d9204ce9e16791671006ee1e711934e", // Honey
+        "c7125e3cf3d3885aea723e6f984fb7033cc20a5051afdddee788c71ef3aeb363", // Bumble
+      ];
+
+      // Buzz channels use UUIDs. Map text tags to known channel UUIDs.
+      // Default to #general (a950a4b9...) if the tag doesn't match a known channel.
+      const channelUuidMap: Record<string, string> = {
+        "hpec-stargate": "a950a4b9-51be-5d09-a46c-6141f269d52b", // #general
+        "general": "a950a4b9-51be-5d09-a46c-6141f269d52b",       // #general
+        "welcome": "f497e722-733d-57e7-a950-3276961754b3",       // #welcome-everyone
+      };
+      const resolvedChannel = channelUuidMap[channelTag] || channelTag;
+
+      const tags: string[][] = [["h", resolvedChannel]];
+      for (const pk of buzzAgentPubkeys) {
+        tags.push(["p", pk]);
+      }
+
+      // Use kind 9 for Buzz channel messages
+      await this.relay.publishEvent(9, tags, content);
       console.log(`[ChatBuzzBridge] Dispatched job ${jobId} for agent ${agentId} to #${channelTag}`);
       return { success: true, jobId };
     } catch (e: any) {
@@ -598,6 +670,54 @@ export class ChatBuzzBridge {
     if (this.relay) {
       this.relay.disconnect();
       this.relay = undefined;
+    }
+  }
+
+  // Subscribe to a Buzz channel to receive messages (bidirectional sync)
+  subscribeToChannel(channelUuid: string, callback: (event: any) => void): string | null {
+    if (!this.relay?.isReady()) {
+      console.error("[ChatBuzzBridge] Cannot subscribe: relay not ready");
+      return null;
+    }
+    return this.relay.subscribe(
+      { kinds: [9], channels: [channelUuid], since: Math.floor(Date.now() / 1000) - 3600 },
+      callback
+    );
+  }
+
+  unsubscribe(subId: string): void {
+    if (this.relay) {
+      this.relay.unsubscribe(subId);
+    }
+  }
+
+  // Post a response back to Buzz as mosaicbot (using bridge identity)
+  async postResponse(content: string, channelUuid: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.relay?.isReady()) {
+      return { success: false, error: "Relay not ready" };
+    }
+    try {
+      // Get the bridge keypair
+      const key = await this.loadOrCreateKey();
+      const tags: string[][] = [["h", channelUuid]];
+      
+      // Add mentions for common agents so they see the response
+      const buzzAgentPubkeys = [
+        "069257d83287b0ab9d9997f80d5b198580179b9fe4e972ae80202f8a56fd8c93", // Goose
+        "1dfd7a34d429125979e1e0c94adb275b1aceded8e54b5162e2ecad0d4142c241", // Fizz
+        "8cdbbd13191cf99658fa7d081debabcd1d9204ce9e16791671006ee1e711934e", // Honey
+        "c7125e3cf3d3885aea723e6f984fb7033cc20a5051afdddee788c71ef3aeb363", // Bumble
+      ];
+      for (const pk of buzzAgentPubkeys) {
+        tags.push(["p", pk]);
+      }
+      
+      await this.relay.publishEvent(9, tags, content);
+      console.log("[ChatBuzzBridge] Posted mosaicbot response to #" + channelUuid);
+      return { success: true };
+    } catch (e: any) {
+      console.error("[ChatBuzzBridge] Failed to post response:", e);
+      return { success: false, error: e.message };
     }
   }
 }

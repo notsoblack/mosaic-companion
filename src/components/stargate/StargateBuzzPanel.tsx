@@ -63,6 +63,7 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
   const [configRelay, setConfigRelay] = useState("wss://hpec-stargate.communities.buzz.xyz");
   const [configChannel, setConfigChannel] = useState("hpec-stargate");
   const [savingConfig, setSavingConfig] = useState(false);
+  const [buzzSubId, setBuzzSubId] = useState<string | null>(null);
 
   // ── Load status on mount ──
   useEffect(() => {
@@ -71,6 +72,50 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
     const interval = setInterval(() => loadStatus(), 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // ── Subscribe to Buzz channel messages when connected ──
+  useEffect(() => {
+    if (!status.connected) return;
+    
+    // Subscribe to receive messages from Buzz
+    const subscribeToBuzz = async () => {
+      try {
+        const channelUuid = "a950a4b9-51be-5d09-a46c-6141f269d52b"; // #general
+        const result = await (window as any).chatAPI?.buzzSubscribe?.(channelUuid);
+        if (result?.success && result?.subId) {
+          setBuzzSubId(result.subId);
+          console.log("[StargateBuzzPanel] Subscribed to Buzz channel:", result.subId);
+        }
+      } catch (e) {
+        console.error("[StargateBuzzPanel] Failed to subscribe:", e);
+      }
+    };
+    
+    subscribeToBuzz();
+    
+    // Set up listener for incoming messages - add to missions
+    const unsubscribe = (window as any).chatAPI?.onBuzzIncomingMessage?.((event: any) => {
+      console.log("[StargateBuzzPanel] Incoming Buzz message:", event);
+      const newMission: ActiveMission = {
+        id: event.id || `msg-${Date.now()}`,
+        agentId: "buzz-incoming",
+        agentName: event.pubkey?.slice(0, 12) + "..." || "Buzz",
+        channelTag: selectedChannelTag,
+        channelName: selectedChannelTag,
+        task: event.content || "",
+        status: "active",
+        lastActivity: event.created_at * 1000 || Date.now(),
+      };
+      setMissions(prev => [...prev, newMission]);
+    });
+    
+    return () => {
+      if (unsubscribe) unsubscribe();
+      if (buzzSubId) {
+        (window as any).chatAPI?.buzzUnsubscribe?.(buzzSubId);
+      }
+    };
+  }, [status.connected]);
 
   const loadStatus = async () => {
     try {

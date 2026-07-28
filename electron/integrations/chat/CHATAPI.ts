@@ -160,4 +160,16 @@ export const chatAPI = {
     ipcRenderer.invoke("buzz:dispatch", agentId, task, channelTag),
 
   buzzImportKey: (nsec: string) => ipcRenderer.invoke("buzz:import-key", nsec),
+
+  buzzSubscribe: (channelUuid: string) => ipcRenderer.invoke("buzz:subscribe", channelUuid),
+
+  buzzUnsubscribe: (subId: string) => ipcRenderer.invoke("buzz:unsubscribe", subId),
+
+  onBuzzIncomingMessage: (callback: (event: any) => void) => {
+    ipcRenderer.on("buzz:incoming-message", (_event, data) => callback(data));
+    return () => ipcRenderer.removeListener("buzz:incoming-message", callback);
+  },
+
+  buzzPostResponse: (content: string, channelUuid: string) =>
+    ipcRenderer.invoke("buzz:post-response", content, channelUuid),
 };

@@ -285,6 +285,40 @@ export function initChat(): void {
     const bridge = getBuzzBridge() || initBuzzBridge();
     return await bridge.importKey(nsec);
   });
+
+  // Bidirectional sync: subscribe to Buzz channel messages
+  ipcMain.handle("buzz:subscribe", async (_e: IpcMainInvokeEvent, channelUuid: string) => {
+    try {
+      const bridge = getBuzzBridge() || initBuzzBridge();
+      const subId = bridge.subscribeToChannel(channelUuid, (event) => {
+        // Forward received events to the renderer process via an IPC event
+        const { BrowserWindow } = require("electron");
+        const mainWindow = BrowserWindow.getAllWindows()[0];
+        if (mainWindow) {
+          mainWindow.webContents.send("buzz:incoming-message", event);
+        }
+      });
+      return { success: !!subId, subId };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle("buzz:unsubscribe", async (_e: IpcMainInvokeEvent, subId: string) => {
+    const bridge = getBuzzBridge() || initBuzzBridge();
+    bridge.unsubscribe(subId);
+    return { success: true };
+  });
+
+  // Post a response as mosaicbot (bridge identity)
+  ipcMain.handle("buzz:post-response", async (_e: IpcMainInvokeEvent, content: string, channelUuid: string) => {
+    try {
+      const bridge = getBuzzBridge() || initBuzzBridge();
+      return await bridge.postResponse(content, channelUuid);
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
 }
 
 export function stopChat(): void {
