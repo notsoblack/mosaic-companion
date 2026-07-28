@@ -350,7 +350,7 @@ export class ChatBuzzBridge {
 
   private _decodeNsec(nsec: string): string | null {
     try {
-      const bech32 = require("bech32");
+      const { bech32 } = require("bech32");
       const decoded = bech32.decode(nsec);
       const data = bech32.fromWords(decoded.words);
       return bytesToHex(Uint8Array.from(data));
