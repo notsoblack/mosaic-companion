@@ -567,6 +567,12 @@ export class ChatBuzzBridge {
     }
   }
 
+  // Track dispatched jobs for response correlation
+  private dispatchedJobs = new Map<string, { agentId: string; task: string; channelTag: string; timestamp: number }>();
+
+  // Event emitter for job responses
+  public onJobResponse?: (jobId: string, response: any) => void;
+
   async dispatchAgentJob(agentId: string, task: string, channelTag: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
     if (!this.relay?.isReady()) {
       throw new Error("Relay not ready — cannot dispatch. Check connection status.");

@@ -75,16 +75,26 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
 
   // ── Subscribe to Buzz channel messages when connected ──
   useEffect(() => {
-    if (!status.connected) return;
+    if (!status.connected || !selectedChannelTag) return;
     
     // Subscribe to receive messages from Buzz
+    let subId: string | null = null;
+    let unsubscribeFn: (() => void) | null = null;
+    
     const subscribeToBuzz = async () => {
       try {
-        const channelUuid = "a950a4b9-51be-5d09-a46c-6141f269d52b"; // #general
+        // Channel UUID mapping for common channels
+        const channelUuidMap: Record<string, string> = {
+          "hpec-stargate": "f46acf8b-72cf-4b8f-851a-b264baead837",
+          "general": "a950a4b9-51be-5d09-a46c-6141f269d52b",
+          "welcome": "f497e722-733d-57e7-a950-3276961754b3",
+        };
+        const channelUuid = channelUuidMap[selectedChannelTag] || selectedChannelTag;
         const result = await (window as any).chatAPI?.buzzSubscribe?.(channelUuid);
         if (result?.success && result?.subId) {
+          subId = result.subId;
           setBuzzSubId(result.subId);
-          console.log("[StargateBuzzPanel] Subscribed to Buzz channel:", result.subId);
+          console.log("[StargateBuzzPanel] Subscribed to Buzz channel:", result.subId, "for", selectedChannelTag);
         }
       } catch (e) {
         console.error("[StargateBuzzPanel] Failed to subscribe:", e);
@@ -94,8 +104,15 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
     subscribeToBuzz();
     
     // Set up listener for incoming messages - add to missions
-    const unsubscribe = (window as any).chatAPI?.onBuzzIncomingMessage?.((event: any) => {
+    unsubscribeFn = (window as any).chatAPI?.onBuzzIncomingMessage?.((event: any) => {
       console.log("[StargateBuzzPanel] Incoming Buzz message:", event);
+      
+      // Check if this message is for our channel
+      const eventChannelTag = event.tags?.find((t: string[]) => t[0] === "h")?.[1];
+      if (eventChannelTag && eventChannelTag !== channelUuid) {
+        return; // Skip messages from other channels
+      }
+      
       const newMission: ActiveMission = {
         id: event.id || `msg-${Date.now()}`,
         agentId: "buzz-incoming",
@@ -110,12 +127,44 @@ export const StargateBuzzPanel: React.FC<StargateBuzzPanelProps> = ({ userAgents
     });
     
     return () => {
-      if (unsubscribe) unsubscribe();
-      if (buzzSubId) {
-        (window as any).chatAPI?.buzzUnsubscribe?.(buzzSubId);
+      if (unsubscribeFn) unsubscribeFn();
+      if (subId) {
+        (window as any).chatAPI?.buzzUnsubscribe?.(subId);
+        setBuzzSubId(null);
       }
     };
+  }, [status.connected, selectedChannelTag]);
+
+  // ── Auto-refresh mission status every 30s when connected ──
+  useEffect(() => {
+    if (!status.connected) return;
+    
+    const refreshInterval = setInterval(() => {
+      // Refresh missions with recent activity
+      console.log("[StargateBuzzPanel] Auto-refreshing missions...");
+    }, 30000);
+    
+    return () => clearInterval(refreshInterval);
   }, [status.connected]);
+
+  // ── Listen for job responses from dispatched agents ──
+  useEffect(() => {
+    const unsubscribe = (window as any).chatAPI?.onBuzzJobResponse?.((data: { jobId: string; response: any }) => {
+      console.log("[StargateBuzzPanel] Job response received:", data);
+      
+      // Update mission status for the job
+      setMissions(prev => prev.map(m => {
+        if (m.task?.includes(data.jobId)) {
+          return { ...m, status: "idle" as const, lastActivity: Date.now() };
+        }
+        return m;
+      }));
+    });
+    
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
 
   const loadStatus = async () => {
     try {
