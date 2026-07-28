@@ -459,6 +459,26 @@ const TOOLS = [
       required: ["name"],
     },
   },
+  {
+    name: "stargate_get_fleet_status",
+    description: "Get HyperCycle node fleet status from Stargate.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "stargate_get_agent_jobs",
+    description: "Get pending jobs from AgentJobsPanel.",
+    inputSchema: { type: "object", properties: { status: { type: "string" } } },
+  },
+  {
+    name: "stargate_dispatch_local_agent",
+    description: "Dispatch a Mosaic agent to handle a task.",
+    inputSchema: { type: "object", properties: { agentId: { type: "string" }, task: { type: "string" } }, required: ["agentId", "task"] },
+  },
+  {
+    name: "stargate_list_aims",
+    description: "List AIM instances on Stargate nodes.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 const RESOURCES = [
@@ -624,6 +644,69 @@ async function handleTool(name, args) {
             text: `Channel creation event published. Event ID: ${result.eventId}`,
           },
         ],
+      };
+    }
+n    case "stargate_get_fleet_status": {
+      // Mock fleet status for now - would integrate with FleetDiscoveryService
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            nodes: [
+              { id: "r2d2", status: "online", ip: "192.168.1.10", aims: 2 },
+              { id: "c3po", status: "online", ip: "192.168.1.11", aims: 1 },
+            ],
+            totalNodes: 2,
+            onlineNodes: 2,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case "stargate_get_agent_jobs": {
+      // Would integrate with AgentJobService
+      const status = args.status || "pending";
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            jobs: [
+              { id: "job-1", task: "Analyze codebase", status: "pending", priority: "high" },
+            ],
+            status,
+            count: 1,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case "stargate_dispatch_local_agent": {
+      // Would integrate with agent dispatch system
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            dispatched: true,
+            agentId: args.agentId,
+            task: args.task,
+            message: `Dispatched ${args.agentId} to handle: ${args.task}`,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case "stargate_list_aims": {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            aims: [
+              { slot: 1, model: "claude", status: "running" },
+              { slot: 2, model: "gpt4", status: "idle" },
+            ],
+            total: 2,
+          }, null, 2),
+        }],
       };
     }
 
