@@ -19,7 +19,9 @@ declare global {
   }
 }
 
-import { 
+import {
+  Globe,
+  Target, 
   initializeAdaPortal,
   agentMarketplace,
   leaderboard,
@@ -76,6 +78,8 @@ import StargateTelemetryCard from './stargate/StargateTelemetryCard';
 import StargateCommunityAIMPanel from './stargate/StargateCommunityAIMPanel';
 import MidnightCityCommandPanel from './stargate/MidnightCityCommandPanel';
 import StargateBuzzPanel from './stargate/StargateBuzzPanel';
+import AgentJobsPanel from './stargate/AgentJobsPanel';
+import StargateNavigatorPanel from './stargate/StargateNavigatorPanel';
 import { Users, Trophy, GraduationCap, Package, Cpu, Zap, Star, ArrowRight, Search, Filter, RefreshCw, TrendingUp, CheckCircle, XCircle, Loader, Rocket, TrendingUpIcon, Code, Bot, Workflow, Sparkles, Settings, CpuIcon, LayoutDashboard, Wallet, Key, Building2, FolderOutput, Network, Shield, Lock,  Unlock, Layers, Server, Plus, BookOpen, Download, Wand2, ImagePlus, Pickaxe, Info, MessageSquare } from 'lucide-react';
 
 // ---- Module-level helper: ensure wallet is on Base chain ----
@@ -222,6 +226,8 @@ const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'stargate', label: 'Stargate Pool', icon: <Zap size={18} /> },
   { id: 'midnight', label: 'Midnight City', icon: <Pickaxe size={18} /> },
   { id: 'buzz', label: 'Buzz', icon: <MessageSquare size={18} /> },
+  { id: 'jobs', label: 'Agent Jobs', icon: <Target size={18} /> },
+  { id: 'navigator', label: 'Navigator', icon: <Globe size={18} /> },
   { id: 'asp', label: 'Deploy System', icon: <Building2 size={18} /> }
 ];
 
@@ -4471,6 +4477,8 @@ export const AdaPortalPanel: React.FC<AdaPortalPanelProps> = ({
             {activeTab === 'stargate' && renderStargatePool()}
             {activeTab === 'midnight' && <MidnightCityCommandPanel />}
             {activeTab === 'buzz' && <StargateBuzzPanel userAgents={userAgents} />}
+            {activeTab === 'jobs' && <AgentJobsPanel userAgents={userAgents} />}
+            {activeTab === 'navigator' && <StargateNavigatorPanel />}
             {activeTab === 'asp' && renderAspGateway()}
           </>
         )}
